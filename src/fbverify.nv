@@ -1,0 +1,276 @@
+// fbverify.nv — the pass that makes reading in place safe, and the
+// budgets that keep the pass itself bounded.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// A FLATBUFFER IS A GRAPH OF OFFSETS INTO SOMEBODY ELSE'S BYTES.  Every
+// read is "follow this number and read there".  On a buffer the program
+// wrote, that is free.  On a buffer that arrived over a socket, it is
+// an arbitrary-offset read decided by whoever sent it — and the format
+// has no length on a table, no terminator, no checksum and no tag to
+// notice a wrong one with.
+//
+// SO THE VERIFIER IS NOT AN OPTION, IT IS THE OTHER HALF OF THE FORMAT.
+// It walks every reachable offset once, checks that each lands inside
+// the buffer and is aligned, that every vtable is well formed, that
+// every vector's length fits, that every string is terminated, and that
+// every required field is there.  A caller may then read the whole
+// buffer with the unchecked accessors, which is where the format's
+// speed comes from, and `FbBuf.verified` is how this package records
+// that somebody did.
+//
+// THE VERIFIER NEEDS ITS OWN BUDGETS, AND THAT IS NOT PARANOIA.  Two
+// tables may legally point at the same vtable, and two fields may
+// legally point at the same subtree — so the reachable graph is a DAG
+// and a small buffer can describe an enormous traversal.  The reference
+// verifier carries a table count and a depth limit for exactly this,
+// and so does this one: `FbVerifierBudgetReached` is a POLICY meeting a
+// file, which is why `fberror.is_malformed` answers false for it.
+//
+// VERIFICATION NEEDS A SCHEMA FOR EXACTLY ONE THING: which fields are
+// required, and which slots are tables, vectors, strings or scalars.
+// Without one this module verifies the buffer's SHAPE — offsets,
+// alignment, vtables, lengths, terminators — which is what makes an
+// arbitrary buffer safe to walk; `verify_with_schema` adds the
+// per-field part.
+
+use fberror
+use fbbuf
+use fbschema
+
+// The table budget a verifier starts with: 1,000,000.
+//
+// The number of tables it will visit before answering
+// `FbVerifierBudgetReached`.  A DAG of offsets means a small buffer can
+// describe an enormous traversal.
+pub const FB_TABLES_DEFAULT = 1000000
+
+// The depth budget a verifier starts with: 64.
+//
+// How deeply tables may nest.  The reference verifier's own default.
+pub const FB_DEPTH_DEFAULT = 64
+
+// The bounds a verification is held to.
+//
+// A value a caller builds once and names, rather than three optional
+// arguments with a security decision in each of their defaults.
+//
+// ```novo
+// use fbverify
+//
+// fn main() [io]
+//     println("${fbverify.default_budget().tables}")
+// ```
+pub struct FbBudget
+    // How many tables may be visited.
+    tables: Int
+    // How deeply tables may nest.
+    depth: Int
+    // How many bytes of the buffer may be visited in total, or `-1`.
+    //
+    // A third bound, because a buffer whose fields all point at the
+    // same large vector visits far more bytes than it occupies.
+    bytes: Int
+
+// The budget a caller gets when it says nothing.
+//
+// ```novo
+// use fbverify
+//
+// fn main() [io]
+//     println("${fbverify.default_budget().depth}")
+// ```
+pub fn default_budget() -> FbBudget []
+    todo("flatbuffers-nv.fbverify.default_budget")
+
+// A budget with the table count a caller chooses.
+//
+// ```novo
+// use fbverify
+//
+// fn main() [io]
+//     println("${fbverify.with_tables(fbverify.default_budget(), 1000).tables}")
+// ```
+pub fn with_tables(b: FbBudget, n: Int) -> FbBudget []
+    todo("flatbuffers-nv.fbverify.with_tables")
+
+// A budget with the depth a caller chooses.
+//
+// ```novo
+// use fbverify
+//
+// fn main() [io]
+//     println("${fbverify.with_depth(fbverify.default_budget(), 8).depth}")
+// ```
+pub fn with_depth(b: FbBudget, n: Int) -> FbBudget []
+    todo("flatbuffers-nv.fbverify.with_depth")
+
+// A budget with the byte bound a caller chooses; `-1` is unbounded.
+//
+// ```novo
+// use fbverify
+//
+// fn main() [io]
+//     println("${fbverify.with_bytes(fbverify.default_budget(), 1048576).bytes}")
+// ```
+pub fn with_bytes(b: FbBudget, n: Int) -> FbBudget []
+    todo("flatbuffers-nv.fbverify.with_bytes")
+
+// Verify a buffer's SHAPE, and answer it marked verified.
+//
+// Walks every reachable offset once: every uoffset lands inside the
+// buffer and is aligned, every vtable's size covers its own header and
+// its slots, every field a vtable names sits inside its table, every
+// vector's length fits, and every string carries its terminator.
+//
+// THE CALL THAT MAKES THE UNCHECKED ACCESSORS SAFE.  A buffer that
+// comes back from this can be read with `fbtable.field_u32` and its
+// siblings, which is where the format's speed lives.  One that did not
+// go through it must be read with the `checked_*` accessors.
+//
+// Without a schema this cannot check required fields or know a slot's
+// type, so it verifies what is checkable from the bytes alone — which
+// is enough to make an arbitrary buffer safe to WALK, and is what the
+// reference verifier calls a buffer verification.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbverify
+//
+// fn main() [io]
+//     match fbverify.verify(fbbuf.buffer(bytes.zeros(16)),
+//                           fbverify.default_budget())
+//         Ok(b)  => println("${b.verified}")
+//         Err(e) => println(e.message())
+// ```
+pub fn verify(b: FbBuf, budget: FbBudget) -> Result<FbBuf, FbFault> []
+    todo("flatbuffers-nv.fbverify.verify")
+
+// Verify a buffer against a schema, which adds the per-field part.
+//
+// The schema supplies the one thing the bytes do not: which slots are
+// tables, vectors, strings, structs or scalars, and which fields are
+// `(required)`.  So this also refuses a required field that is absent,
+// a slot whose contents do not fit its declared type, and a union
+// whose type byte names no member.
+//
+// `FbRequiredFieldMissing` for the first, and `FbBadUnionType` for the
+// last.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbschema
+// use fbverify
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; } root_type T;")
+//         Ok(s) =>
+//             match fbverify.verify_with_schema(fbbuf.buffer(bytes.zeros(16)), s,
+//                                               fbverify.default_budget())
+//                 Ok(b)  => println("${b.verified}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn verify_with_schema(b: FbBuf, s: FbSchema, budget: FbBudget) -> Result<FbBuf, FbFault> []
+    todo("flatbuffers-nv.fbverify.verify_with_schema")
+
+// Verify a size-prefixed buffer.
+//
+// The four-byte prefix is checked against the bytes available before
+// anything else, which is the check a reader of a stream needs and the
+// one that catches a frame that was cut short.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbverify
+//
+// fn main() [io]
+//     match fbverify.verify_size_prefixed(fbbuf.buffer(bytes.zeros(16)),
+//                                         fbverify.default_budget())
+//         Ok(b)  => println("${b.verified}")
+//         Err(e) => println(e.message())
+// ```
+pub fn verify_size_prefixed(b: FbBuf, budget: FbBudget) -> Result<FbBuf, FbFault> []
+    todo("flatbuffers-nv.fbverify.verify_size_prefixed")
+
+// What a verification cost, for a caller sizing its budgets.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbverify
+//
+// fn main() [io]
+//     match fbverify.measure(fbbuf.buffer(bytes.zeros(16)),
+//                            fbverify.default_budget())
+//         Ok(c)  => println("${c.tables}")
+//         Err(e) => println(e.message())
+// ```
+pub struct FbCost
+    // How many tables were visited.
+    tables: Int
+    // How deep the deepest chain of tables went.
+    depth: Int
+    // How many bytes were visited.
+    bytes: Int
+
+// Verify, and answer what it cost rather than the buffer.
+//
+// For a caller deciding what budgets to set in production from what
+// its own messages actually cost — which is a better number than a
+// guess, and is the reason the budgets are a value rather than
+// constants.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbverify
+//
+// fn main() [io]
+//     match fbverify.measure(fbbuf.buffer(bytes.zeros(16)),
+//                            fbverify.default_budget())
+//         Ok(c)  => println("${c.depth}")
+//         Err(e) => println(e.message())
+// ```
+pub fn measure(b: FbBuf, budget: FbBudget) -> Result<FbCost, FbFault> []
+    todo("flatbuffers-nv.fbverify.measure")
+
+// Whether a buffer has been verified.
+//
+// The flag the unchecked accessors are meant to be gated on.  It is a
+// fact about this program's own history and not about the bytes, which
+// is why it lives on `FbBuf` and not in them.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbverify
+//
+// fn main() [io]
+//     println("${fbverify.is_verified(fbbuf.buffer(bytes.zeros(16)))}")
+// ```
+pub fn is_verified(b: FbBuf) -> Bool []
+    todo("flatbuffers-nv.fbverify.is_verified")
+
+// Mark a buffer verified without verifying it.
+//
+// THE ESCAPE HATCH, NAMED TO BE SEEN.  A program that just built a
+// buffer with `fbbuild` knows it is sound and should not pay to walk
+// it again.  Anything else that calls this is asserting something
+// about bytes it did not write, and a reviewer should ask why.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbverify
+//
+// fn main() [io]
+//     let b = fbverify.trust_unverified(fbbuf.buffer(bytes.zeros(16)))
+//     println("${b.verified}")
+// ```
+pub fn trust_unverified(b: FbBuf) -> FbBuf []
+    todo("flatbuffers-nv.fbverify.trust_unverified")

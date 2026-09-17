@@ -1,0 +1,367 @@
+// fbvector.nv — vectors, strings and structs: the three things a table
+// points AT rather than contains, plus the one it contains inline.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// A VECTOR IS A LENGTH AND THEN ITS ELEMENTS.  A `u32` count, then
+// `count` elements of the element's own size, each aligned.  A table's
+// vector field holds a uoffset to the LENGTH, so the elements start
+// four bytes after it.
+//
+// ELEMENT ACCESS IS ARITHMETIC AND NOTHING ELSE.  `elements_at + i *
+// size`.  A vector of a million integers costs one bounds check and a
+// multiply to read the last one, and nothing at all to skip — which is
+// the whole reason to choose this format over one that parses.
+//
+// A STRING IS A VECTOR OF BYTES WITH A ZERO AFTER IT.  The terminator
+// is NOT counted in the length; it is there so that a C consumer can
+// point at the bytes and call `strlen`.  A writer that omitted it
+// produces a buffer that other readers walk off the end of, and
+// `fbverify` checks for it.
+//
+// AND A STRING IS NOT CHECKED FOR UTF-8 BY THE ORDINARY ACCESSOR.  The
+// format says a string is UTF-8; it does not say a reader must verify,
+// and verifying per access would cost the format its reason for
+// existing.  `utf8_string` is the checking one, and a caller that
+// cares calls it once rather than paying for it always.
+//
+// A STRUCT IS INLINE AND THAT IS ITS WHOLE CHARACTER.  Fixed size, no
+// vtable, no optional fields, no strings, no vectors — only scalars and
+// other structs, aligned to the largest member and padded to a multiple
+// of it.  It costs nothing to read and it CAN NEVER GROW: its size is
+// baked into every table that contains it and into every vector of it,
+// so adding a field to a struct invalidates every buffer ever written.
+// A table is the thing that evolves; a struct is the thing that does
+// not.
+
+use fberror
+use fbbuf
+use fbtable
+
+// The bytes a vector's length prefix occupies: 4.
+pub const FB_VECTOR_LENGTH_BYTES = 4
+
+// A vector in a buffer.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbvector
+//
+// fn main() [io]
+//     match fbvector.vector_at(fbbuf.buffer(bytes.zeros(16)), 8, 4)
+//         Ok(v)  => println("${v.length}")
+//         Err(e) => println(e.message())
+// ```
+pub struct FbVector
+    // The buffer.
+    buf: FbBuf
+    // Where the elements start: four bytes after the length.
+    elements_at: Int
+    // How many elements there are.
+    length: Int
+    // How many bytes one element occupies.  Four for a vector of
+    // tables, strings or other vectors, because those are uoffsets;
+    // the struct's own size for a vector of structs.
+    elem_size: Int
+
+// The vector at a position, given its element size.
+//
+// `at` is where the LENGTH is, which is where a table's vector field
+// points.  `FbBadVectorLength`, which `fberror.is_malformed` calls
+// damage, when the length would put the last element outside the
+// buffer — the check a reader cannot skip, because
+// a length is four bytes of somebody else's file and four billion is
+// representable in them.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbvector
+//
+// fn main() [io]
+//     match fbvector.vector_at(fbbuf.buffer(bytes.zeros(16)), 8, 4)
+//         Ok(v)  => println("${v.elem_size}")
+//         Err(e) => println(e.message())
+// ```
+pub fn vector_at(b: FbBuf, at: Int, elem_size: Int) -> Result<FbVector, FbFault> []
+    todo("flatbuffers-nv.fbvector.vector_at")
+
+// A table's vector field, or `None` when absent.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+// use fbvector
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t) =>
+//             match fbvector.field_vector(t, fbtable.FB_FIRST_SLOT, 4)
+//                 Ok(_)  => println("read")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn field_vector(t: FbTable, slot: Int, elem_size: Int) -> Result<?FbVector, FbFault> []
+    todo("flatbuffers-nv.fbvector.field_vector")
+
+// Where element `i` sits: `elements_at + i * elem_size`.
+//
+// `-1` for an index outside the vector.  THE WHOLE COST OF RANDOM
+// ACCESS: a multiply and an add, for element zero or element nine
+// hundred thousand alike.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbvector
+//
+// fn main() [io]
+//     match fbvector.vector_at(fbbuf.buffer(bytes.zeros(16)), 8, 4)
+//         Ok(v)  => println("${fbvector.element_at(v, 0)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn element_at(v: FbVector, i: Int) -> Int []
+    todo("flatbuffers-nv.fbvector.element_at")
+
+// Element `i` of a vector of 8-bit values.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbvector
+//
+// fn main() [io]
+//     match fbvector.vector_at(fbbuf.buffer(bytes.zeros(16)), 8, 1)
+//         Ok(v) =>
+//             match fbvector.get_u8(v, 0)
+//                 Ok(x)  => println("${x}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn get_u8(v: FbVector, i: Int) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbvector.get_u8")
+
+// Element `i` of a vector of 32-bit values.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbvector
+//
+// fn main() [io]
+//     match fbvector.vector_at(fbbuf.buffer(bytes.zeros(16)), 8, 4)
+//         Ok(v) =>
+//             match fbvector.get_u32(v, 0)
+//                 Ok(x)  => println("${x}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn get_u32(v: FbVector, i: Int) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbvector.get_u32")
+
+// Element `i` of a vector of 64-bit values.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbvector
+//
+// fn main() [io]
+//     match fbvector.vector_at(fbbuf.buffer(bytes.zeros(16)), 8, 8)
+//         Ok(v) =>
+//             match fbvector.get_i64(v, 0)
+//                 Ok(x)  => println("${x}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn get_i64(v: FbVector, i: Int) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbvector.get_i64")
+
+// Element `i` of a vector of `double`.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbvector
+//
+// fn main() [io]
+//     match fbvector.vector_at(fbbuf.buffer(bytes.zeros(16)), 8, 8)
+//         Ok(v) =>
+//             match fbvector.get_f64(v, 0)
+//                 Ok(x)  => println("${x}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn get_f64(v: FbVector, i: Int) -> Result<Float, FbFault> []
+    todo("flatbuffers-nv.fbvector.get_f64")
+
+// Element `i` of a vector of tables.
+//
+// The elements are uoffsets, so this follows one.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbvector
+//
+// fn main() [io]
+//     match fbvector.vector_at(fbbuf.buffer(bytes.zeros(16)), 8, 4)
+//         Ok(v) =>
+//             match fbvector.get_table(v, 0)
+//                 Ok(_)  => println("a table")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn get_table(v: FbVector, i: Int) -> Result<FbTable, FbFault> []
+    todo("flatbuffers-nv.fbvector.get_table")
+
+// Where element `i` of a vector of STRUCTS sits.
+//
+// Structs are stored inline in the vector, so this is a position and
+// not a follow — which is why a vector of a million three-float
+// vertices is twelve megabytes and one allocation and not a million
+// offsets.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbvector
+//
+// fn main() [io]
+//     match fbvector.vector_at(fbbuf.buffer(bytes.zeros(16)), 8, 12)
+//         Ok(v)  => println("${fbvector.get_struct_at(v, 0)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn get_struct_at(v: FbVector, i: Int) -> Int []
+    todo("flatbuffers-nv.fbvector.get_struct_at")
+
+// A string in a buffer: its bytes, without the terminator.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbvector
+//
+// fn main() [io]
+//     match fbvector.string_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(s)  => println("${bytes.len(s)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn string_at(b: FbBuf, at: Int) -> Result<Bytes, FbFault> []
+    todo("flatbuffers-nv.fbvector.string_at")
+
+// A table's string field, as bytes, or `None` when absent.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+// use fbvector
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t) =>
+//             match fbvector.field_string(t, fbtable.FB_FIRST_SLOT)
+//                 Ok(_)  => println("read")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn field_string(t: FbTable, slot: Int) -> Result<?Bytes, FbFault> []
+    todo("flatbuffers-nv.fbvector.field_string")
+
+// A string, checked for UTF-8.
+//
+// `FbStringNotUtf8` when the bytes are not.  A SEPARATE function from
+// `string_at` because the format says a string is UTF-8 and does not
+// say a reader must verify: checking per access would cost this format
+// the thing it exists for, and a caller that cares checks once.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbvector
+//
+// fn main() [io]
+//     match fbvector.utf8_string(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(s)  => println(s)
+//         Err(e) => println(e.message())
+// ```
+pub fn utf8_string(b: FbBuf, at: Int) -> Result<Str, FbFault> []
+    todo("flatbuffers-nv.fbvector.utf8_string")
+
+// Whether the zero byte the format requires after a string's bytes is
+// there.
+//
+// Not counted in the length, and there so that a C consumer can point
+// at the bytes.  `fbverify` checks it; this is the check on its own,
+// for a caller reading one string out of an unverified buffer.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbvector
+//
+// fn main() [io]
+//     println("${fbvector.string_is_terminated(fbbuf.buffer(bytes.zeros(16)), 8)}")
+// ```
+pub fn string_is_terminated(b: FbBuf, at: Int) -> Bool []
+    todo("flatbuffers-nv.fbvector.string_is_terminated")
+
+// How many bytes a struct of these members occupies, and how it is
+// aligned.
+//
+// A struct's size is its members laid out in order, each aligned to
+// its own size, and the whole padded to a multiple of the LARGEST
+// member's alignment.  Published because that padding is invisible in
+// a schema and is exactly what a hand-written reader gets wrong: a
+// `struct Vec3 { x:float; y:float; z:float; }` is twelve bytes, and a
+// `struct Mixed { a:byte; b:double; }` is SIXTEEN.
+//
+// ```novo
+// use fbvector
+//
+// fn main() [io]
+//     match fbvector.struct_layout([4, 4, 4])
+//         Ok(l)  => println("${l.size} ${l.align}")
+//         Err(e) => println(e.message())
+// ```
+pub struct FbStructLayout
+    // The struct's total size, padded.
+    size: Int
+    // The struct's alignment: the largest member's.
+    align: Int
+
+// The layout a list of member sizes produces.
+//
+// `FbBadParameter` for a member size that is not a power of two, which
+// no FlatBuffers scalar is.
+//
+// ```novo
+// use fbvector
+//
+// fn main() [io]
+//     match fbvector.struct_layout([1, 8])
+//         Ok(l)  => println("${l.size}")
+//         Err(e) => println(e.message())
+// ```
+pub fn struct_layout(member_sizes: [Int]) -> Result<FbStructLayout, FbFault> []
+    todo("flatbuffers-nv.fbvector.struct_layout")
+
+// Where member `i` of a struct sits, relative to the struct's start.
+//
+// The padding made explicit, so a reader never counts member sizes by
+// hand.
+//
+// ```novo
+// use fbvector
+//
+// fn main() [io]
+//     match fbvector.struct_member_at([1, 8], 1)
+//         Ok(n)  => println("${n}")
+//         Err(e) => println(e.message())
+// ```
+pub fn struct_member_at(member_sizes: [Int], i: Int) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbvector.struct_member_at")

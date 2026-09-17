@@ -1,0 +1,293 @@
+// fberror.nv — one fault type for a format whose reads are pointer
+// arithmetic into somebody else's bytes.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// WHY THIS PACKAGE HAS MORE TO SAY ABOUT FAULTS THAN A PARSER DOES.  A
+// FlatBuffer is read IN PLACE: a field read is "follow the offset at
+// this position and read four bytes there".  There is no parse step
+// between the bytes and the value, which is the whole point of the
+// format and also means a malformed buffer is a read at an arbitrary
+// offset.  Every fault kind here is one of the ways that goes wrong.
+//
+// A POSITION IS A BYTE OFFSET AND A FIELD.  "Offset 4096 is outside the
+// buffer" does not say which field's offset pointed there, and the
+// field is what a person can go and look at in the schema.
+//
+// AND THE VERIFIER IS WHERE MOST OF THESE COME FROM.  A caller that has
+// verified a buffer can then read it with the unchecked accessors and
+// pay nothing per field; a caller that has not must use the checked
+// ones.  Both surfaces exist, and `fbverify` is the bridge — which is
+// why `is_malformed` is the predicate the verifier reports through and
+// `is_limit` the one the verifier's own budgets report through.
+
+// Where in a buffer a fault was found.
+//
+// ```novo
+// use fberror
+//
+// fn main() [io]
+//     println("${fberror.here(4096, 6).offset}")
+// ```
+pub struct FbWhere
+    // The byte offset the fault was found at, or `-1`.
+    offset: Int
+    // The vtable slot of the field being read, or `-1` where the fault
+    // is not about a field.  A slot and not a name, because reading a
+    // buffer does not need the schema and a fault should not start
+    // needing one.
+    slot: Int
+
+// A position, for a caller building a fault of its own.
+//
+// ```novo
+// use fberror
+//
+// fn main() [io]
+//     println("${fberror.here(0, -1).slot}")
+// ```
+pub fn here(offset: Int, slot: Int) -> FbWhere []
+    todo("flatbuffers-nv.fberror.here")
+
+// Why a FlatBuffer could not be read, written or verified.
+//
+// Every variant is prefixed `Fb`, because a variant is constructed by
+// NAME across a whole program.
+//
+// ```novo
+// use fberror
+//
+// fn main() [io]
+//     let f = fberror.fault(FbBufferTooShort, fberror.here(0, -1))
+//     println(fberror.kind_name(f.kind))
+// ```
+pub enum FbFaultKind
+    // The buffer is shorter than the smallest legal one: four bytes
+    // for the root offset, or eight for a buffer with a file
+    // identifier.
+    FbBufferTooShort
+    // An offset pointed outside the buffer.  Carries where it pointed
+    // and how large the buffer is.
+    //
+    // THE FAULT THE VERIFIER EXISTS FOR.  Reading in place means a
+    // field read is an offset dereference, and an offset that leaves
+    // the buffer is a read of whatever is next in memory.
+    FbOffsetOutOfRange(target: Int, buffer_len: Int)
+    // A table's vtable offset is a SIGNED value subtracted from the
+    // table's position, and the result was outside the buffer.
+    //
+    // Its own arm because the subtraction is what a port gets wrong: a
+    // vtable is usually BEFORE the table, so the soffset is normally
+    // positive and the arithmetic normally goes backwards.
+    FbBadVtableOffset(soffset: Int)
+    // A vtable whose declared size is smaller than its own four-byte
+    // header, or larger than the buffer.
+    FbBadVtableSize(size: Int)
+    // A vtable slot's offset put a field outside the table's own
+    // declared size.
+    FbFieldOutsideTable(slot: Int, field_offset: Int, table_size: Int)
+    // A value was read at an offset that is not a multiple of its own
+    // size.
+    //
+    // The format requires every scalar to be aligned to its size and
+    // every struct to its largest member.  A reader on a machine that
+    // faults on unaligned access would crash, and one that does not
+    // would read a value the writer did not write.
+    FbMisaligned(offset: Int, align: Int)
+    // A vector's length would put its last element outside the
+    // buffer.  Carries the length and the element size.
+    FbBadVectorLength(length: Int, elem_size: Int)
+    // A string that is not terminated by the zero byte the format
+    // requires after its bytes.
+    //
+    // The terminator is not counted in the length and exists so that a
+    // C consumer can use the bytes directly.  A writer that omitted it
+    // produces a buffer other readers walk off the end of.
+    FbStringNotTerminated(offset: Int)
+    // A string whose bytes are not valid UTF-8, when the caller asked
+    // for one that is.
+    //
+    // NOT raised by the ordinary accessor: the format says a string is
+    // UTF-8 and does not say a reader must check, and checking per
+    // access would cost the format its reason for existing.
+    // `fbvector.utf8_string` is the checking one.
+    FbStringNotUtf8(offset: Int)
+    // A union's type byte named a variant the schema does not have.
+    // Carries the byte.
+    FbBadUnionType(got: Int)
+    // A union whose type byte is not zero and whose value field is
+    // absent, or the other way round.
+    //
+    // A union is TWO fields in the vtable and the format does not
+    // enforce their agreement; a reader that read one without the
+    // other reads a table at offset zero.
+    FbUnionHalfPresent(slot: Int)
+    // The buffer's four-byte file identifier is not the one the caller
+    // required.  Carries both.
+    //
+    // NOT corruption: it is what tells a caller the buffer is a
+    // different message type, which is the only thing the identifier
+    // is for.
+    FbWrongFileIdentifier(want: Str, got: Str)
+    // The verifier ran out of its table budget, its depth budget or
+    // its byte budget.  Carries which and the bound.
+    //
+    // NOT corruption either.  A buffer whose tables reference each
+    // other can be made to cost a verifier unbounded time, so the
+    // budgets exist and a bound reached is a policy meeting a file.
+    FbVerifierBudgetReached(what: Str, allowed: Int)
+    // A required field — one the schema marks `(required)` — was
+    // absent.
+    //
+    // The only per-field requirement the format has, and one a reader
+    // can only check with a schema in hand.
+    FbRequiredFieldMissing(slot: Int)
+    // A caller-supplied buffer was too small for what the builder was
+    // asked to write.
+    FbBufferTooSmall(want: Int, have: Int)
+    // A builder was asked for something out of order — a field after
+    // its table was ended, a nested object inside a vector that was
+    // not started.
+    //
+    // The builder writes BACK TO FRONT, which means an object has to be
+    // finished before its parent can reference it, and the order is
+    // therefore not the order a caller thinks in.  This is the fault
+    // that says so.
+    FbBuilderOutOfOrder(what: Str)
+    // The `.fbs` schema text did not parse.  Carries the line and a
+    // detail.
+    FbSchemaSyntax(line: Int, detail: Str)
+    // A `.fbs` schema that parses but does not make sense: a type that
+    // is not declared, a union member that is not a table, a `struct`
+    // with a `string` field, two fields with the same id.
+    FbSchemaInvalid(detail: Str)
+    // A schema feature this package does not implement.  Carries the
+    // name.
+    //
+    // NOT a broken schema.  `flexbuffers`, RPC `rpc_service`
+    // declarations and the `native_*` code-generation attributes are
+    // all legal `.fbs` and all outside this package.
+    FbSchemaUnsupported(what: Str)
+    // A caller's parameter was outside the range the function
+    // documents.
+    FbBadParameter(what: Str)
+
+// A fault, with the position it was found at.
+//
+// ```novo
+// use fberror
+//
+// fn main() [io]
+//     println("${fberror.fault(FbBufferTooShort, fberror.here(0, -1)).at.offset}")
+// ```
+pub struct FbFault
+    // Why.
+    kind: FbFaultKind
+    // Where.
+    at: FbWhere
+
+// How an `FbFault` reads when a `Result` carrying one is reported.
+impl Error for FbFault
+    // The one-line report: the reason, the vtable slot where there is
+    // one, and the byte offset.
+    fn message(self) -> Str
+        todo("flatbuffers-nv.fberror.FbFault.message")
+
+// A fault from a kind and a position.
+//
+// ```novo
+// use fberror
+//
+// fn main() [io]
+//     println(fberror.kind_name(
+//         fberror.fault(FbMisaligned(3, 4), fberror.here(3, -1)).kind))
+// ```
+pub fn fault(kind: FbFaultKind, at: FbWhere) -> FbFault []
+    todo("flatbuffers-nv.fberror.fault")
+
+// A short, stable name for a kind: `"offset-out-of-range"`,
+// `"misaligned"`, `"wrong-file-identifier"`.
+//
+// ```novo
+// use fberror
+//
+// fn main() [io]
+//     println(fberror.kind_name(FbBufferTooShort))
+// ```
+pub fn kind_name(k: FbFaultKind) -> Str []
+    todo("flatbuffers-nv.fberror.kind_name")
+
+// One English sentence saying what went wrong and where, with every
+// number the variant carries in it.
+//
+// ```novo
+// use fberror
+//
+// fn main() [io]
+//     println(fberror.describe(
+//         fberror.fault(FbBadVtableOffset(-8), fberror.here(16, -1))))
+// ```
+pub fn describe(f: FbFault) -> Str []
+    todo("flatbuffers-nv.fberror.describe")
+
+// Whether the BUFFER is malformed.
+//
+// True for every structural kind, and false for the file identifier,
+// the verifier's budgets, the builder's ordering, the schema kinds and
+// a caller's parameter.  The predicate `fbverify.verify` reports
+// through.
+//
+// ```novo
+// use fberror
+//
+// fn main() [io]
+//     println("${fberror.is_malformed(FbBufferTooShort)}")
+// ```
+pub fn is_malformed(k: FbFaultKind) -> Bool []
+    todo("flatbuffers-nv.fberror.is_malformed")
+
+// Whether the fault is a bound this program chose.
+//
+// True for `FbVerifierBudgetReached` and `FbBufferTooSmall`.  Neither
+// says the buffer is bad.
+//
+// ```novo
+// use fberror
+//
+// fn main() [io]
+//     println("${fberror.is_limit(FbBufferTooSmall(64, 8))}")
+// ```
+pub fn is_limit(k: FbFaultKind) -> Bool []
+    todo("flatbuffers-nv.fberror.is_limit")
+
+// Whether the fault is about the SCHEMA rather than about a buffer.
+//
+// True for the three schema kinds.  A developer's problem, and a
+// different thing to report.
+//
+// ```novo
+// use fberror
+//
+// fn main() [io]
+//     let yes = fberror.is_schema_error(FbSchemaInvalid("no root type"))
+//     println("${yes}")
+// ```
+pub fn is_schema_error(k: FbFaultKind) -> Bool []
+    todo("flatbuffers-nv.fberror.is_schema_error")
+
+// Whether the buffer or schema is fine and asks for something this
+// package does not do.
+//
+// True for `FbSchemaUnsupported` alone — `flexbuffers`, `rpc_service`
+// and the code-generation attributes are all legal `.fbs`.
+//
+// ```novo
+// use fberror
+//
+// fn main() [io]
+//     let yes = fberror.is_unsupported(FbSchemaUnsupported("flexbuffers"))
+//     println("${yes}")
+// ```
+pub fn is_unsupported(k: FbFaultKind) -> Bool []
+    todo("flatbuffers-nv.fberror.is_unsupported")

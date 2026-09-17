@@ -1,0 +1,382 @@
+// fbtable.nv — the vtable, which is what makes a FlatBuffer both
+// forward-compatible and free to read.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// A TABLE DOES NOT CONTAIN ITS OWN LAYOUT.  It begins with a SIGNED
+// 32-bit offset that is SUBTRACTED from the table's position to find a
+// VTABLE, and the vtable says where each field sits:
+//
+//     [ vtable size : u16 ][ table size : u16 ][ field 0 : u16 ] …
+//
+// A field's entry is its byte offset within the table, and an entry of
+// ZERO means the field is ABSENT — the reader uses the schema's default
+// and the buffer spends nothing on it.
+//
+// THREE THINGS FOLLOW, AND THEY ARE WHY THE FORMAT IS SHAPED THIS WAY.
+//
+//   Optional fields cost nothing.  A table with two of forty fields set
+//   is a vtable and two values.  Protocol Buffers pays a tag per
+//   present field; FlatBuffers pays two bytes per DECLARED field, once
+//   per distinct vtable, shared across every table that has the same
+//   shape.
+//
+//   Adding a field is compatible in both directions.  A new field gets
+//   a new slot at the end; an old reader's vtable is shorter than the
+//   writer's, reads past its own end as absent, and uses its default.
+//   A new reader meeting old data does the same.  THE ONE RULE IS THAT
+//   SLOTS ARE NEVER REORDERED OR REUSED, and the schema's `id:`
+//   attribute is how that is pinned.
+//
+//   Reading costs one indirection.  Field, vtable, offset, value.
+//   Nothing is copied and nothing is parsed.
+//
+// AND THE VTABLE IS SHARED.  A builder that writes a thousand tables of
+// the same shape writes ONE vtable and a thousand offsets to it.  That
+// deduplication is not an optimisation a reader may assume away: two
+// tables may point at the same vtable, and a verifier that counted
+// vtables as it counted tables would refuse a perfectly ordinary
+// buffer.
+//
+// TWO ACCESSOR SURFACES.  A caller that has verified a buffer reads
+// with `field_u32` and pays a vtable lookup; a caller that has not uses
+// `checked_u32`, which bounds-checks every step.  Both exist because
+// verifying once and then reading a million fields is the shape this
+// format is for, and making every read pay for the verification would
+// take that away.
+
+use fberror
+use fbbuf
+
+// The bytes a vtable's header occupies: 4.
+//
+// Its own size and the table's size, both `u16`.
+pub const FB_VTABLE_HEADER_BYTES = 4
+
+// A vtable entry of zero means the field is absent.
+pub const FB_FIELD_ABSENT = 0
+
+// The vtable slot the first declared field of a table occupies: 4.
+//
+// Slots are byte offsets into the vtable, and the first four bytes are
+// the header — so field 0 is slot 4, field 1 is slot 6, and a slot is
+// always even.  A reader that used the field's INDEX as its slot is
+// wrong on every field, which is why `slot_of_field` exists.
+pub const FB_FIRST_SLOT = 4
+
+// A table in a buffer: where it is, and where its vtable is.
+//
+// Resolved once, so that reading twenty fields of one table does not
+// resolve the vtable twenty times.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t)  => println("${t.at}")
+//         Err(e) => println(e.message())
+// ```
+pub struct FbTable
+    // The buffer the table lives in.
+    buf: FbBuf
+    // The table's own position.
+    at: Int
+    // The vtable's position: `at - soffset`.
+    vtable_at: Int
+    // The vtable's size in bytes, which bounds the slots that exist.
+    vtable_size: Int
+    // The table's size in bytes, which bounds where a field may sit.
+    table_size: Int
+
+// The vtable slot a field index occupies: `4 + index * 2`.
+//
+// A reader that used the index directly is wrong on every field.
+//
+// ```novo
+// use fbtable
+//
+// fn main() [io]
+//     println("${fbtable.slot_of_field(0)}")
+// ```
+pub fn slot_of_field(index: Int) -> Int []
+    todo("flatbuffers-nv.fbtable.slot_of_field")
+
+// The table at a position, with its vtable resolved.
+//
+// `FbBadVtableOffset` when the signed offset puts the vtable outside
+// the buffer, and `FbBadVtableSize` for a vtable smaller than its own
+// header.  `fberror.is_malformed` answers true for both.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t)  => println("${t.vtable_size}")
+//         Err(e) => println(e.message())
+// ```
+pub fn table_at(b: FbBuf, at: Int) -> Result<FbTable, FbFault> []
+    todo("flatbuffers-nv.fbtable.table_at")
+
+// The buffer's root table.
+//
+// `fbbuf.root` and then `table_at`, which is what every read of a
+// whole buffer starts with.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+//
+// fn main() [io]
+//     match fbtable.root_table(fbbuf.buffer(bytes.zeros(16)))
+//         Ok(t)  => println("${t.at}")
+//         Err(e) => println(e.message())
+// ```
+pub fn root_table(b: FbBuf) -> Result<FbTable, FbFault> []
+    todo("flatbuffers-nv.fbtable.root_table")
+
+// Whether a slot is present in this table.
+//
+// False for a slot past the vtable's end — which is what an OLD reader
+// meeting a NEW writer's table sees for every field it does not know —
+// and for a slot whose entry is zero.  Both mean "absent, use the
+// default", and neither is an error.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t)  => println("${fbtable.has_field(t, fbtable.FB_FIRST_SLOT)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn has_field(t: FbTable, slot: Int) -> Bool []
+    todo("flatbuffers-nv.fbtable.has_field")
+
+// Where a field's value sits, or `-1` when the field is absent.
+//
+// An absolute position in the buffer: `t.at + vtable entry`.  The one
+// lookup every accessor below is built on.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t)  => println("${fbtable.field_at(t, fbtable.FB_FIRST_SLOT)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn field_at(t: FbTable, slot: Int) -> Int []
+    todo("flatbuffers-nv.fbtable.field_at")
+
+// A `bool` field, or the schema's default when absent.
+//
+// EVERY SCALAR ACCESSOR TAKES ITS DEFAULT, because the format does not
+// store one: a field equal to its default is simply not written, and
+// the only place the default exists is the schema.  A reader that
+// passed zero where the schema said `-1` reads the wrong value and
+// nothing says so.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t)  => println("${fbtable.field_bool(t, fbtable.FB_FIRST_SLOT, false)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn field_bool(t: FbTable, slot: Int, default: Bool) -> Bool []
+    todo("flatbuffers-nv.fbtable.field_bool")
+
+// A `u8`, `i8` or `byte` field, or its default.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t)  => println("${fbtable.field_u8(t, fbtable.FB_FIRST_SLOT, 0)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn field_u8(t: FbTable, slot: Int, default: Int) -> Int []
+    todo("flatbuffers-nv.fbtable.field_u8")
+
+// A 16-bit field, or its default.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t)  => println("${fbtable.field_u16(t, fbtable.FB_FIRST_SLOT, 0)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn field_u16(t: FbTable, slot: Int, default: Int) -> Int []
+    todo("flatbuffers-nv.fbtable.field_u16")
+
+// A 32-bit field, or its default.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t)  => println("${fbtable.field_u32(t, fbtable.FB_FIRST_SLOT, 0)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn field_u32(t: FbTable, slot: Int, default: Int) -> Int []
+    todo("flatbuffers-nv.fbtable.field_u32")
+
+// A 64-bit field, or its default.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t)  => println("${fbtable.field_i64(t, fbtable.FB_FIRST_SLOT, 0)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn field_i64(t: FbTable, slot: Int, default: Int) -> Int []
+    todo("flatbuffers-nv.fbtable.field_i64")
+
+// A `double` field, or its default.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t)  => println("${fbtable.field_f64(t, fbtable.FB_FIRST_SLOT, 0.0)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn field_f64(t: FbTable, slot: Int, default: Float) -> Float []
+    todo("flatbuffers-nv.fbtable.field_f64")
+
+// A nested table field, or `None` when absent.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t) =>
+//             match fbtable.field_table(t, fbtable.FB_FIRST_SLOT)
+//                 Some(_) => println("present")
+//                 None    => println("absent")
+//         Err(e) => println(e.message())
+// ```
+pub fn field_table(t: FbTable, slot: Int) -> ?FbTable []
+    todo("flatbuffers-nv.fbtable.field_table")
+
+// A 32-bit field on a buffer nobody verified, bounds-checked.
+//
+// The second accessor surface.  `field_u32` above assumes the buffer's
+// offsets are sound, which is what verifying once and then reading a
+// million fields buys; this one assumes nothing and answers a
+// `Result`.
+//
+// A caller that has not verified and will read a handful of fields
+// uses these; a caller that has verified and will read many uses the
+// others.  Publishing both is how this package avoids making one
+// choice for everybody.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t) =>
+//             match fbtable.checked_u32(t, fbtable.FB_FIRST_SLOT, 0)
+//                 Ok(v)  => println("${v}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn checked_u32(t: FbTable, slot: Int, default: Int) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbtable.checked_u32")
+
+// A nested table field on a buffer nobody verified, bounds-checked.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t) =>
+//             match fbtable.checked_table(t, fbtable.FB_FIRST_SLOT)
+//                 Ok(_)  => println("read")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn checked_table(t: FbTable, slot: Int) -> Result<?FbTable, FbFault> []
+    todo("flatbuffers-nv.fbtable.checked_table")
+
+// How many slots a vtable declares: `(vtable_size - 4) / 2`.
+//
+// A writer's table may declare more than a reader knows about, and
+// that is exactly the forward compatibility the format is for.  A
+// reader asks this when it wants to know whether it is looking at data
+// from a newer schema.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t)  => println("${fbtable.declared_slots(t)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn declared_slots(t: FbTable) -> Int []
+    todo("flatbuffers-nv.fbtable.declared_slots")
+
+// An inline struct field's position, or `-1` when absent.
+//
+// A struct is stored INLINE in its table, not through an offset, so
+// this is a position and not a follow.  That is what makes a struct
+// cheap and what makes it unable to grow: its size is part of every
+// table that contains it, and adding a field to a struct changes the
+// layout of every buffer ever written.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t)  => println("${fbtable.field_struct_at(t, fbtable.FB_FIRST_SLOT)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn field_struct_at(t: FbTable, slot: Int) -> Int []
+    todo("flatbuffers-nv.fbtable.field_struct_at")

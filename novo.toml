@@ -1,0 +1,55 @@
+[package]
+name        = "flatbuffers-nv"
+version     = "0.0.1"
+description = "The FlatBuffers binary format for novo-lang, read IN PLACE and with nothing performed: vtables and tables with their schema-supplied defaults, inline structs, vectors, strings, unions as the two vtable slots they really are, the file identifier, and a verifier with its own budgets — because reading in place means every field read is an offset dereference into somebody else's bytes.  A builder that writes back to front with alignment and vtable deduplication, and the .fbs schema language read into a value so a buffer can be read by field NAME at run time, with no code generation anywhere.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`.  Reading a FlatBuffer is little-endian loads at computed
+# offsets, and writing one is stores into a buffer the caller owns.
+# Nothing is read from a file, nothing is written to one, and nothing
+# is generated: `flatc` is a code generator and this package is
+# deliberately not one — `fbschema` reads a `.fbs` into a VALUE and
+# `fbaccess` reads a buffer by field name from it, at run time.
+#
+# The buffers are the caller's on both sides.  `fbbuf.buffer` borrows
+# bytes and copies nothing — that is the format's whole reason for
+# existing — and `fbbuild.builder_into` fills a buffer the caller
+# sized, answering `FbBufferTooSmall` rather than growing.
+#
+# No device claim, and not because the format would not fit: it would,
+# and `fbbuild.builder_into` is the shape a device needs.  The schema
+# parser in `fbschema` would not, and a package makes one claim for all
+# of its modules.  A `flatbuffers-core-nv` split covering `fbbuf`,
+# `fbtable`, `fbvector` and `fbunion` is the row to file if a device
+# lane wants one; this one does not claim it.
+layer       = "core"
+
+category    = "encoding"
+
+tags        = ["flatbuffers", "serialization", "zero-copy", "encoding", "schema", "vtable", "sans-io"]
+repository  = "https://github.com/novolang/flatbuffers-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.9.0"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "Reading a FlatBuffer in place, from a schema value"
+
+[dependencies]
+# Nothing.  The stdlib and nothing else.
+#
+# The format has no compression, no checksum and no hash in it — a
+# FlatBuffer is offsets and little-endian scalars and that is all — so
+# there is nothing here another package would supply.  The one thing
+# this package deliberately does NOT do is generate code, and a
+# generator is a program written on top of `fbschema` rather than a
+# dependency of it.

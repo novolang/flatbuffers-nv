@@ -1,0 +1,316 @@
+// fbaccess.nv — reading a FlatBuffer by FIELD NAME, from a schema
+// value, with nothing generated.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// THIS IS THE MODULE THE PACKAGE EXISTS FOR.  Everything below it —
+// `fbbuf`, `fbtable`, `fbvector`, `fbunion` — reads a buffer by SLOT,
+// which is what a generated accessor does after the generator has
+// turned a name into a number.  This module does that turning at run
+// time, from an `FbSchema`, so a program can read a buffer whose schema
+// it was handed rather than one it was compiled against.
+//
+// WHAT THAT MAKES POSSIBLE, and none of it is possible with generated
+// code: a dumper that prints any FlatBuffer as JSON given its schema; a
+// converter between two schema versions; a schema registry that
+// validates messages; a test that reads a buffer written by a
+// generator in another language, against the same `.fbs`.
+//
+// THE PRICE IS A LOOKUP PER FIELD, and the signatures say so.
+// `field` resolves a name to a slot and a type every call, which is a
+// linear scan of a table's fields.  A caller reading one field of a
+// million records should resolve ONCE with `fbschema.slot_of` and then
+// use `fbtable`'s slot accessors — and this module's own doc says that
+// rather than pretending the convenience is free.
+//
+// `FbValue` IS THIS MODULE'S AND NOT `fbvector`'S.  A slot accessor
+// answers a number, because the caller already knew the type.  A
+// name accessor cannot: the schema knows and the caller may not, so
+// the value carries its own type.  That is the one place this package
+// materialises anything, and it is materialising a scalar and not a
+// tree — a table field answers an `FbTable`, still in place.
+
+use fberror
+use fbbuf
+use fbschema
+use fbtable
+
+// A value read by name, carrying which type it turned out to be.
+//
+// ```novo
+// use fbaccess
+//
+// fn main() [io]
+//     println(fbaccess.value_kind(fbaccess.int_value(7)))
+// ```
+pub enum FbValue
+    // The field was absent and the schema gave no default, or the
+    // field is a `NONE` union.
+    FbValueAbsent
+    // A boolean.
+    FbValueBool(b: Bool)
+    // Any of the six integer types, and an enum.  One arm rather than
+    // six, because the schema already said which and a caller that
+    // needs the exact type asks the schema.
+    FbValueInt(n: Int)
+    // A `float` or a `double`.
+    FbValueFloat(x: Float)
+    // A string's bytes, without its terminator and without a UTF-8
+    // check.
+    FbValueBytes(b: Bytes)
+    // A nested table, still in place: a position, not a tree.
+    FbValueTableAt(at: Int)
+    // A vector, still in place: where its elements start, how many
+    // there are, and how large each is.
+    FbValueVectorAt(at: Int, length: Int, elem_size: Int)
+    // A struct, still in place: a position and a size.
+    FbValueStructAt(at: Int, size: Int)
+
+// An integer value.
+//
+// ```novo
+// use fbaccess
+//
+// fn main() [io]
+//     println(fbaccess.value_kind(fbaccess.int_value(7)))
+// ```
+pub fn int_value(n: Int) -> FbValue []
+    todo("flatbuffers-nv.fbaccess.int_value")
+
+// A short, stable name for a value's kind: `"int"`, `"bytes"`,
+// `"table"`, `"absent"`.
+//
+// ```novo
+// use fbaccess
+//
+// fn main() [io]
+//     println(fbaccess.value_kind(FbValueAbsent))
+// ```
+pub fn value_kind(v: FbValue) -> Str []
+    todo("flatbuffers-nv.fbaccess.value_kind")
+
+// A buffer paired with the schema that describes it.
+//
+// ```novo
+// use std.bytes
+// use fbaccess
+// use fbbuf
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; } root_type T;")
+//         Ok(s) =>
+//             match fbaccess.document(fbbuf.buffer(bytes.zeros(16)), s)
+//                 Ok(d)  => println(d.type_name)
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub struct FbDocument
+    // The buffer.
+    buf: FbBuf
+    // The schema.
+    schema: FbSchema
+    // The name of the table at the root, from the schema's
+    // `root_type`.
+    type_name: Str
+
+// Pair a buffer with a schema, checking the file identifier.
+//
+// `FbSchemaInvalid` when the schema declares no `root_type`, and
+// `FbWrongFileIdentifier` when the schema declares a `file_identifier`
+// and the buffer carries a different one.
+//
+// CHECKING THE IDENTIFIER HERE IS THE POINT.  It is the only thing in
+// the format that says what KIND of message a buffer is, and a reader
+// that skipped it reads a `Monster` as a `Weapon` and gets plausible
+// nonsense.  A schema that declares no identifier cannot be checked,
+// and that is worth knowing about a schema.
+//
+// ```novo
+// use std.bytes
+// use fbaccess
+// use fbbuf
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; } root_type T;")
+//         Ok(s) =>
+//             match fbaccess.document(fbbuf.buffer(bytes.zeros(16)), s)
+//                 Ok(d)  => println("${d.buf.len}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn document(b: FbBuf, s: FbSchema) -> Result<FbDocument, FbFault> []
+    todo("flatbuffers-nv.fbaccess.document")
+
+// The document's root table.
+//
+// ```novo
+// use std.bytes
+// use fbaccess
+// use fbbuf
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; } root_type T;")
+//         Ok(s) =>
+//             match fbaccess.document(fbbuf.buffer(bytes.zeros(16)), s)
+//                 Ok(d) =>
+//                     match fbaccess.root(d)
+//                         Ok(t)  => println("${t.at}")
+//                         Err(e) => println(e.message())
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn root(d: FbDocument) -> Result<FbTable, FbFault> []
+    todo("flatbuffers-nv.fbaccess.root")
+
+// A field of a table, by name, with its type and default from the
+// schema.
+//
+// `type_name` is the table's name in the schema, because a buffer's
+// table does not carry one.  `FbSchemaInvalid`, which
+// `fberror.is_schema_error` answers true for, for a table name the
+// schema does not declare; `FbValueAbsent` for a field the schema
+// declares and the buffer does not carry, when the schema gives no
+// default.
+//
+// A LOOKUP PER CALL.  Resolving a name to a slot is a scan of the
+// table's fields, and a caller reading one field of a million records
+// should resolve once with `fbschema.slot_of` and then use
+// `fbtable.field_u32` and its siblings instead.
+//
+// ```novo
+// use std.bytes
+// use fbaccess
+// use fbbuf
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; } root_type T;")
+//         Ok(s) =>
+//             match fbaccess.document(fbbuf.buffer(bytes.zeros(16)), s)
+//                 Ok(d) =>
+//                     match fbaccess.field(d, "T", 8, "a")
+//                         Ok(v)  => println(fbaccess.value_kind(v))
+//                         Err(e) => println(e.message())
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn field(d: FbDocument, type_name: Str, table_at: Int, name: Str) -> Result<FbValue, FbFault> []
+    todo("flatbuffers-nv.fbaccess.field")
+
+// Every field a table declares, with its value, in declaration order.
+//
+// Deprecated fields are skipped, which is what `(deprecated)` means:
+// the slot stays reserved forever and the field is not read.
+//
+// The call a dumper is made of.
+//
+// ```novo
+// use std.bytes
+// use fbaccess
+// use fbbuf
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; } root_type T;")
+//         Ok(s) =>
+//             match fbaccess.document(fbbuf.buffer(bytes.zeros(16)), s)
+//                 Ok(d) =>
+//                     match fbaccess.fields(d, "T", 8)
+//                         Ok(vs) => println("${list.len(vs)}")
+//                         Err(e) => println(e.message())
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn fields(d: FbDocument, type_name: Str, table_at: Int) -> Result<[FbValue], FbFault> []
+    todo("flatbuffers-nv.fbaccess.fields")
+
+// The names of the fields `fields` answers, in the same order.
+//
+// A parallel list rather than a pair, so a caller that wants only the
+// values does not walk names it will not use.
+//
+// ```novo
+// use fbaccess
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; }")
+//         Ok(s) =>
+//             match fbaccess.field_names(s, "T")
+//                 Ok(ns) => println("${list.len(ns)}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn field_names(s: FbSchema, type_name: Str) -> Result<[Str], FbFault> []
+    todo("flatbuffers-nv.fbaccess.field_names")
+
+// The table name a union field's type byte selects, or `""` for
+// `NONE`.
+//
+// The one thing a reader cannot do without the schema at all: a
+// union's value is a table and nothing in the buffer says WHICH table,
+// only a small integer that indexes the union's declaration.
+//
+// ```novo
+// use fbaccess
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table A {} table B {} union U { A, B }")
+//         Ok(s) =>
+//             match fbaccess.union_member(s, "U", 1)
+//                 Ok(n)  => println(n)
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn union_member(s: FbSchema, union_name: Str, type_id: Int) -> Result<Str, FbFault> []
+    todo("flatbuffers-nv.fbaccess.union_member")
+
+// The enum member name a value denotes, or `""`.
+//
+// ```novo
+// use fbaccess
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("enum E : byte { A, B }")
+//         Ok(s) =>
+//             match fbaccess.enum_member(s, "E", 0)
+//                 Ok(n)  => println(n)
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn enum_member(s: FbSchema, enum_name: Str, value: Int) -> Result<Str, FbFault> []
+    todo("flatbuffers-nv.fbaccess.enum_member")
+
+// A whole document as JSON, in `flatc --json`'s shape.
+//
+// The dumper, and the reason this module answers values rather than
+// positions.  Bytes are written as a string of their values, an enum
+// as its member name, a union as its member's fields with a
+// `_type` beside them — which is what `flatc` does and therefore what
+// a caller comparing against it expects.
+//
+// ```novo
+// use std.bytes
+// use fbaccess
+// use fbbuf
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; } root_type T;")
+//         Ok(s) =>
+//             match fbaccess.document(fbbuf.buffer(bytes.zeros(16)), s)
+//                 Ok(d) =>
+//                     match fbaccess.to_json(d)
+//                         Ok(j)  => println(j)
+//                         Err(e) => println(e.message())
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn to_json(d: FbDocument) -> Result<Str, FbFault> []
+    todo("flatbuffers-nv.fbaccess.to_json")

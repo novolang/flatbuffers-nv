@@ -1,0 +1,429 @@
+// fbbuild.nv — the builder, which writes BACK TO FRONT and is why the
+// order a caller thinks in is not the order it calls in.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// A FLATBUFFER IS WRITTEN FROM THE END OF THE BUFFER TOWARDS THE START,
+// and that is not a quirk.  A uoffset is always FORWARD from its own
+// position, so a thing must exist before anything can point at it — and
+// the only way to write a parent after its children while keeping the
+// parent earlier in the buffer is to fill the buffer backwards.  The
+// root offset, written last, ends up at position 0.
+//
+// SO THE CALL ORDER IS INSIDE OUT, and no amount of API design hides
+// it.  To build a table with a string field: write the STRING first,
+// keep the offset it answers, then start the table, then set the field
+// to that offset, then end the table.  A caller that tried to write the
+// string between `start_table` and `end_table` would be interleaving
+// two objects in one region, and that is the fault
+// `FbBuilderOutOfOrder` names.
+//
+// A STRUCT IS THE EXCEPTION AND IT IS WORTH SAYING TWICE.  A struct is
+// written INLINE, inside its parent table, so it IS written between
+// `start_table` and `end_table` — and a vector of structs is written as
+// one contiguous block rather than as offsets.  The two rules look
+// contradictory until the word "inline" is in front of you.
+//
+// ALIGNMENT IS THE BUILDER'S JOB.  Every value is written at a multiple
+// of its own size, achieved by padding BEFORE it — which, writing
+// backwards, means padding is written after the value in call order and
+// appears before it in the buffer.  `min_align` tracks the largest
+// alignment anything has needed, because the whole buffer has to be
+// aligned to it.
+//
+// VTABLES ARE DEDUPLICATED.  A builder writing ten thousand tables of
+// the same shape writes one vtable and ten thousand offsets to it,
+// which is most of what makes the format small for repeated records.
+// `vtables_written` is what says whether it is happening.
+
+use fberror
+use fbbuf
+
+// The size a builder's buffer starts at, in bytes: 1024.
+pub const FB_BUILDER_INITIAL_BYTES = 1024
+
+// A builder, part way through a buffer.
+//
+// Carried by value, like every other state machine on this registry:
+// each call answers the next builder.
+//
+// ```novo
+// use fbbuild
+//
+// fn main() [io]
+//     println("${fbbuild.builder().used}")
+// ```
+pub struct FbBuilder
+    // The bytes written so far, at the END of this buffer.
+    data: Bytes
+    // How many bytes of `data` are used, counted from its end.
+    used: Int
+    // The largest alignment anything in the buffer has needed, which
+    // the whole buffer must be aligned to.
+    min_align: Int
+    // The vtable offsets already written, for deduplication.
+    vtables: [Int]
+    // Whether a table is being built.
+    in_table: Bool
+    // The field offsets of the table being built, indexed by slot.
+    current: [Int]
+    // Whether a vector is being built.
+    in_vector: Bool
+
+// A builder with nothing written.
+//
+// ```novo
+// use fbbuild
+//
+// fn main() [io]
+//     println("${fbbuild.builder().min_align}")
+// ```
+pub fn builder() -> FbBuilder []
+    todo("flatbuffers-nv.fbbuild.builder")
+
+// A builder over a caller's buffer.
+//
+// The allocation-free form: the caller sizes the buffer and the
+// builder fills it from the end.  `FbBufferTooSmall` when it runs out —
+// which `fberror.is_limit` separates from a malformed anything —
+// rather than growing — which is what a program with a fixed message
+// budget wants, and what a program on a device needs.
+//
+// ```novo
+// use std.bytes
+// use fbbuild
+//
+// fn main() [io]
+//     match fbbuild.builder_into(bytes.zeros(1024))
+//         Ok(b)  => println("${b.used}")
+//         Err(e) => println(e.message())
+// ```
+pub fn builder_into(dst: Bytes) -> Result<FbBuilder, FbFault> []
+    todo("flatbuffers-nv.fbbuild.builder_into")
+
+// Write a string, and answer its offset.
+//
+// CALLED BEFORE the table that will hold it, because a uoffset points
+// forward and a thing must exist before anything can point at it.  The
+// zero terminator the format requires is written here and is not
+// counted in the length.
+//
+// ```novo
+// use std.bytes
+// use fbbuild
+//
+// fn main() [io]
+//     match fbbuild.write_string(fbbuild.builder(), "hello")
+//         Ok(w)  => println("${w.offset}")
+//         Err(e) => println(e.message())
+// ```
+pub fn write_string(b: FbBuilder, s: Str) -> Result<FbWritten, FbFault> []
+    todo("flatbuffers-nv.fbbuild.write_string")
+
+// What one write produced: the builder after it, and the offset the
+// thing was written at.
+//
+// The offset is what a parent's field is later set to, which is why
+// every write answers one and why a caller holds them until it starts
+// the table.
+//
+// ```novo
+// use std.bytes
+// use fbbuild
+//
+// fn main() [io]
+//     match fbbuild.write_string(fbbuild.builder(), "hello")
+//         Ok(w)  => println("${w.builder.used}")
+//         Err(e) => println(e.message())
+// ```
+pub struct FbWritten
+    // The builder after the write.
+    builder: FbBuilder
+    // Where the thing was written, as a uoffset target.
+    offset: Int
+
+// Write a vector of bytes, and answer its offset.
+//
+// ```novo
+// use std.bytes
+// use fbbuild
+//
+// fn main() [io]
+//     match fbbuild.write_bytes(fbbuild.builder(), bytes.zeros(4))
+//         Ok(w)  => println("${w.offset}")
+//         Err(e) => println(e.message())
+// ```
+pub fn write_bytes(b: FbBuilder, data: Bytes) -> Result<FbWritten, FbFault> []
+    todo("flatbuffers-nv.fbbuild.write_bytes")
+
+// Write a vector of 32-bit values, and answer its offset.
+//
+// ```novo
+// use fbbuild
+//
+// fn main() [io]
+//     match fbbuild.write_u32_vector(fbbuild.builder(), [1, 2, 3])
+//         Ok(w)  => println("${w.offset}")
+//         Err(e) => println(e.message())
+// ```
+pub fn write_u32_vector(b: FbBuilder, values: [Int]) -> Result<FbWritten, FbFault> []
+    todo("flatbuffers-nv.fbbuild.write_u32_vector")
+
+// Write a vector of offsets — a vector of tables or of strings.
+//
+// Every element must already have been written, which is the whole
+// back-to-front discipline in one signature.
+//
+// ```novo
+// use fbbuild
+//
+// fn main() [io]
+//     match fbbuild.write_offset_vector(fbbuild.builder(), [])
+//         Ok(w)  => println("${w.offset}")
+//         Err(e) => println(e.message())
+// ```
+pub fn write_offset_vector(b: FbBuilder, offsets: [Int]) -> Result<FbWritten, FbFault> []
+    todo("flatbuffers-nv.fbbuild.write_offset_vector")
+
+// Start a table.
+//
+// `FbBuilderOutOfOrder` when a table or a vector is already being
+// built: the builder fills one contiguous region at a time, and two
+// objects interleaved in one region is the mistake this refuses.
+//
+// ```novo
+// use fbbuild
+//
+// fn main() [io]
+//     match fbbuild.start_table(fbbuild.builder())
+//         Ok(b)  => println("${b.in_table}")
+//         Err(e) => println(e.message())
+// ```
+pub fn start_table(b: FbBuilder) -> Result<FbBuilder, FbFault> []
+    todo("flatbuffers-nv.fbbuild.start_table")
+
+// Set a 32-bit field of the table being built, unless it equals its
+// default.
+//
+// A FIELD EQUAL TO ITS DEFAULT IS NOT WRITTEN AT ALL — no bytes, and no
+// vtable entry — which is where most of a FlatBuffer's compactness
+// comes from and why every setter takes the default.  A caller that
+// passed the wrong default writes a field nobody needed, or omits one
+// somebody did.
+//
+// ```novo
+// use fbbuild
+// use fbtable
+//
+// fn main() [io]
+//     match fbbuild.start_table(fbbuild.builder())
+//         Ok(b) =>
+//             match fbbuild.set_u32(b, fbtable.FB_FIRST_SLOT, 7, 0)
+//                 Ok(b2) => println("${b2.used}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn set_u32(b: FbBuilder, slot: Int, value: Int, default: Int) -> Result<FbBuilder, FbFault> []
+    todo("flatbuffers-nv.fbbuild.set_u32")
+
+// Set a 64-bit field, unless it equals its default.
+//
+// ```novo
+// use fbbuild
+// use fbtable
+//
+// fn main() [io]
+//     match fbbuild.start_table(fbbuild.builder())
+//         Ok(b) =>
+//             match fbbuild.set_i64(b, fbtable.FB_FIRST_SLOT, 7, 0)
+//                 Ok(b2) => println("${b2.used}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn set_i64(b: FbBuilder, slot: Int, value: Int, default: Int) -> Result<FbBuilder, FbFault> []
+    todo("flatbuffers-nv.fbbuild.set_i64")
+
+// Set a `double` field, unless it equals its default.
+//
+// ```novo
+// use fbbuild
+// use fbtable
+//
+// fn main() [io]
+//     match fbbuild.start_table(fbbuild.builder())
+//         Ok(b) =>
+//             match fbbuild.set_f64(b, fbtable.FB_FIRST_SLOT, 1.5, 0.0)
+//                 Ok(b2) => println("${b2.used}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn set_f64(b: FbBuilder, slot: Int, value: Float,
+               default: Float) -> Result<FbBuilder, FbFault> []
+    todo("flatbuffers-nv.fbbuild.set_f64")
+
+// Set a field to an offset that was written earlier.
+//
+// A string, a vector or a nested table.  An offset of zero means
+// absent and writes nothing, which is how an optional reference field
+// costs nothing.
+//
+// ```novo
+// use fbbuild
+// use fbtable
+//
+// fn main() [io]
+//     match fbbuild.start_table(fbbuild.builder())
+//         Ok(b) =>
+//             match fbbuild.set_offset(b, fbtable.FB_FIRST_SLOT, 0)
+//                 Ok(b2) => println("${b2.used}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn set_offset(b: FbBuilder, slot: Int, offset: Int) -> Result<FbBuilder, FbFault> []
+    todo("flatbuffers-nv.fbbuild.set_offset")
+
+// Write a struct INLINE into the table being built, and set its slot.
+//
+// THE ONE THING THAT IS WRITTEN BETWEEN `start_table` AND `end_table`,
+// because a struct lives inside its table rather than at an offset.
+// `data` is the struct's bytes, already laid out with its padding —
+// `fbvector.struct_layout` is what produces the size and the
+// alignment.
+//
+// ```novo
+// use std.bytes
+// use fbbuild
+// use fbtable
+//
+// fn main() [io]
+//     match fbbuild.start_table(fbbuild.builder())
+//         Ok(b) =>
+//             match fbbuild.set_struct(b, fbtable.FB_FIRST_SLOT, bytes.zeros(12), 4)
+//                 Ok(b2) => println("${b2.used}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn set_struct(b: FbBuilder, slot: Int, data: Bytes, align: Int) -> Result<FbBuilder, FbFault> []
+    todo("flatbuffers-nv.fbbuild.set_struct")
+
+// End the table, write or reuse its vtable, and answer its offset.
+//
+// THE DEDUPLICATION HAPPENS HERE.  A table whose vtable matches one
+// already written points at that one, so ten thousand records of the
+// same shape cost one vtable.  A verifier must not assume otherwise,
+// and `vtables_written` is what says how much it saved.
+//
+// ```novo
+// use fbbuild
+//
+// fn main() [io]
+//     match fbbuild.start_table(fbbuild.builder())
+//         Ok(b) =>
+//             match fbbuild.end_table(b)
+//                 Ok(w)  => println("${w.offset}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn end_table(b: FbBuilder) -> Result<FbWritten, FbFault> []
+    todo("flatbuffers-nv.fbbuild.end_table")
+
+// How many distinct vtables the builder has written.
+//
+// Fewer than the tables, for any buffer with repeated records, and
+// that difference is most of the format's compactness.
+//
+// ```novo
+// use fbbuild
+//
+// fn main() [io]
+//     println("${fbbuild.vtables_written(fbbuild.builder())}")
+// ```
+pub fn vtables_written(b: FbBuilder) -> Int []
+    todo("flatbuffers-nv.fbbuild.vtables_written")
+
+// Finish the buffer: write the root offset, the file identifier and
+// the final padding.
+//
+// Answers the bytes, from the start of the buffer.  `identifier` is
+// four characters or `""`; `FbBadParameter` for any other length.
+//
+// The root offset is written LAST and lands at position 0, which is
+// what the whole back-to-front discipline was for.
+//
+// ```novo
+// use std.bytes
+// use fbbuild
+//
+// fn main() [io]
+//     match fbbuild.start_table(fbbuild.builder())
+//         Ok(b) =>
+//             match fbbuild.end_table(b)
+//                 Ok(w) =>
+//                     match fbbuild.finish(w.builder, w.offset, "MONS")
+//                         Ok(out) => println("${bytes.len(out)}")
+//                         Err(e)  => println(e.message())
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn finish(b: FbBuilder, root: Int, identifier: Str) -> Result<Bytes, FbFault> []
+    todo("flatbuffers-nv.fbbuild.finish")
+
+// Finish the buffer with a four-byte length in front.
+//
+// For a stream of buffers on a socket, where the reader has to know
+// where one ends.  The prefix does NOT include itself.
+//
+// ```novo
+// use std.bytes
+// use fbbuild
+//
+// fn main() [io]
+//     match fbbuild.start_table(fbbuild.builder())
+//         Ok(b) =>
+//             match fbbuild.end_table(b)
+//                 Ok(w) =>
+//                     match fbbuild.finish_size_prefixed(w.builder, w.offset, "")
+//                         Ok(out) => println("${bytes.len(out)}")
+//                         Err(e)  => println(e.message())
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn finish_size_prefixed(b: FbBuilder, root: Int, identifier: Str) -> Result<Bytes, FbFault> []
+    todo("flatbuffers-nv.fbbuild.finish_size_prefixed")
+
+// How many bytes the finished buffer will be.
+//
+// Answered without finishing, so a caller sizing a frame knows before
+// it commits.
+//
+// ```novo
+// use fbbuild
+//
+// fn main() [io]
+//     let n = fbbuild.finished_bytes(fbbuild.builder(), "MONS")
+//     println("${n}")
+// ```
+pub fn finished_bytes(b: FbBuilder, identifier: Str) -> Int []
+    todo("flatbuffers-nv.fbbuild.finished_bytes")
+
+// The buffer a finished builder produced, as an `FbBuf` marked
+// verified.
+//
+// A buffer this program just built is sound by construction, and
+// walking it again to prove that would be paying twice.  The result is
+// an `fbbuf.FbBuf` with `verified` already set.  It is
+// `fbverify.trust_unverified` with a reason, and the reason is that
+// the builder is the one caller that legitimately knows.
+//
+// ```novo
+// use std.bytes
+// use fbbuild
+//
+// fn main() [io]
+//     match fbbuild.as_buffer(bytes.zeros(16))
+//         Ok(b)  => println("${b.verified}")
+//         Err(e) => println(e.message())
+// ```
+pub fn as_buffer(finished: Bytes) -> Result<FbBuf, FbFault> []
+    todo("flatbuffers-nv.fbbuild.as_buffer")

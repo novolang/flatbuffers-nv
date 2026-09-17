@@ -1,0 +1,352 @@
+// fbbuf.nv — the buffer itself: a root offset, an optional file
+// identifier, and little-endian scalars at aligned offsets.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// A FLATBUFFER IS READ IN PLACE AND THAT IS THE WHOLE IDEA.  There is
+// no parse step and no deserialised object: reading a field is
+// following an offset and reading some bytes.  A gigabyte buffer costs
+// nothing to "open", a field nobody reads costs nothing at all, and the
+// bytes can be memory-mapped.  Every design decision in this package
+// falls out of that.
+//
+// EVERYTHING IS LITTLE-ENDIAN, EVERYWHERE, on every machine.  The
+// format fixes it so that a buffer written on one architecture is read
+// on another without a conversion pass — which a format that converted
+// would not be reading in place.
+//
+// AND EVERYTHING IS ALIGNED TO ITS OWN SIZE.  A `u32` sits at a
+// multiple of four, a `f64` at a multiple of eight, a struct at a
+// multiple of its largest member.  The builder achieves that by
+// writing BACK TO FRONT and padding; a reader relies on it, and
+// `fbverify` is where a buffer that does not have it is caught.
+//
+// THE ROOT IS A UOFFSET AT THE START.  Four bytes at offset 0, added to
+// 0, give the root table's position.  A buffer may carry a four-byte
+// FILE IDENTIFIER at offset 4 — four ASCII characters chosen by the
+// schema — which is the only thing in the format that says what KIND of
+// message this is.  It is optional, and a reader that does not check it
+// will happily read a `Monster` as a `Weapon`.
+//
+// A SIZE-PREFIXED BUFFER has a four-byte length in front of all of
+// that, for a stream of buffers on a socket where the reader has to
+// know where one ends.  `root_of_size_prefixed` is the accessor, and
+// the prefix is NOT included in the length it declares.
+
+use fberror
+
+// The bytes a uoffset occupies: 4.
+//
+// An unsigned offset, always FORWARD from its own position.
+pub const FB_UOFFSET_BYTES = 4
+
+// The bytes a soffset occupies: 4.
+//
+// A SIGNED offset, and the only signed one in the format.  A table's
+// first field is a soffset that is SUBTRACTED from the table's own
+// position to find its vtable — so it is normally positive and the
+// arithmetic normally goes backwards, which is what a port gets wrong.
+pub const FB_SOFFSET_BYTES = 4
+
+// The bytes a voffset occupies: 2.
+//
+// A vtable's entries are 16-bit, which is why a table may not exceed
+// 65,535 bytes.
+pub const FB_VOFFSET_BYTES = 2
+
+// The bytes a file identifier occupies: 4.
+pub const FB_FILE_IDENTIFIER_BYTES = 4
+
+// Where a file identifier sits: offset 4, straight after the root
+// offset.
+pub const FB_FILE_IDENTIFIER_AT = 4
+
+// The largest a single table may be: 65,535 bytes.
+//
+// Because a vtable entry is a 16-bit offset into the table.  A schema
+// whose table would exceed it is a schema that has to be split, and it
+// is worth knowing before the day a record grows past it.
+pub const FB_TABLE_BYTES_MOST = 65535
+
+// A buffer being read.
+//
+// Carries the bytes, where the buffer starts inside them, and whether
+// it has been verified.  Reading it is arithmetic; nothing is copied.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+//
+// fn main() [io]
+//     println("${fbbuf.buffer(bytes.zeros(8)).at}")
+// ```
+pub struct FbBuf
+    // The bytes.  Not copied, and not owned by this value in any sense
+    // beyond the reference.
+    data: Bytes
+    // Where the FlatBuffer starts inside them.  Non-zero for a buffer
+    // inside a larger message, and for a size-prefixed one.
+    at: Int
+    // How many bytes the FlatBuffer occupies from `at`.
+    len: Int
+    // Whether `fbverify.verify` has passed over it.
+    //
+    // Carried so that the unchecked accessors can be refused on a
+    // buffer nobody verified: reading in place is only safe when
+    // somebody checked the offsets, and a flag that says who did is
+    // cheaper than hoping.
+    verified: Bool
+
+// A buffer over some bytes.
+//
+// Not verified.  `fbverify.verify` answers a verified one.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+//
+// fn main() [io]
+//     println("${fbbuf.buffer(bytes.zeros(8)).len}")
+// ```
+pub fn buffer(data: Bytes) -> FbBuf []
+    todo("flatbuffers-nv.fbbuf.buffer")
+
+// A buffer over part of some bytes.
+//
+// For a FlatBuffer embedded in a larger message — a frame on a socket,
+// a record in a log file.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+//
+// fn main() [io]
+//     match fbbuf.slice(bytes.zeros(16), 8, 8)
+//         Ok(b)  => println("${b.at}")
+//         Err(e) => println(e.message())
+// ```
+pub fn slice(data: Bytes, at: Int, len: Int) -> Result<FbBuf, FbFault> []
+    todo("flatbuffers-nv.fbbuf.slice")
+
+// The position of the root table.
+//
+// The uoffset at the buffer's first four bytes.  `FbBufferTooShort`
+// for a buffer with fewer than four, and `FbOffsetOutOfRange` for a
+// root that points outside it.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+//
+// fn main() [io]
+//     match fbbuf.root(fbbuf.buffer(bytes.zeros(8)))
+//         Ok(r)  => println("${r}")
+//         Err(e) => println(e.message())
+// ```
+pub fn root(b: FbBuf) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbbuf.root")
+
+// The position of the root table in a size-prefixed buffer.
+//
+// The four-byte length in front is skipped; the length does NOT
+// include itself, which is the off-by-four a reader of a stream gets
+// wrong.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+//
+// fn main() [io]
+//     match fbbuf.root_of_size_prefixed(fbbuf.buffer(bytes.zeros(12)))
+//         Ok(r)  => println("${r}")
+//         Err(e) => println(e.message())
+// ```
+pub fn root_of_size_prefixed(b: FbBuf) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbbuf.root_of_size_prefixed")
+
+// The length a size-prefixed buffer declares, not counting the prefix.
+//
+// What a reader of a stream of buffers advances by, plus four.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+//
+// fn main() [io]
+//     match fbbuf.size_prefix(fbbuf.buffer(bytes.zeros(12)))
+//         Ok(n)  => println("${n}")
+//         Err(e) => println(e.message())
+// ```
+pub fn size_prefix(b: FbBuf) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbbuf.size_prefix")
+
+// The four-byte file identifier at offset 4, or `""`.
+//
+// THE ONLY THING IN THE FORMAT THAT SAYS WHAT KIND OF MESSAGE THIS IS,
+// and it is optional.  A reader that does not check it will read a
+// `Monster` as a `Weapon` and get plausible nonsense, because a
+// FlatBuffer is otherwise entirely self-similar.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+//
+// fn main() [io]
+//     println(fbbuf.file_identifier(fbbuf.buffer(bytes.zeros(8))))
+// ```
+pub fn file_identifier(b: FbBuf) -> Str []
+    todo("flatbuffers-nv.fbbuf.file_identifier")
+
+// Whether the buffer's file identifier is the one expected.
+//
+// `FbWrongFileIdentifier` carrying both, which `fberror.is_malformed`
+// answers FALSE for: a buffer of the wrong message type is a
+// perfectly good buffer meeting the wrong reader.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+//
+// fn main() [io]
+//     match fbbuf.check_identifier(fbbuf.buffer(bytes.zeros(8)), "MONS")
+//         Ok(_)  => println("the right kind of message")
+//         Err(e) => println(e.message())
+// ```
+pub fn check_identifier(b: FbBuf, want: Str) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbbuf.check_identifier")
+
+// A `u8` at an offset, checked against the buffer's bounds.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+//
+// fn main() [io]
+//     match fbbuf.read_u8(fbbuf.buffer(bytes.zeros(8)), 0)
+//         Ok(v)  => println("${v}")
+//         Err(e) => println(e.message())
+// ```
+pub fn read_u8(b: FbBuf, at: Int) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbbuf.read_u8")
+
+// A little-endian `u16` at an offset, checked for bounds and
+// alignment.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+//
+// fn main() [io]
+//     match fbbuf.read_u16(fbbuf.buffer(bytes.zeros(8)), 0)
+//         Ok(v)  => println("${v}")
+//         Err(e) => println(e.message())
+// ```
+pub fn read_u16(b: FbBuf, at: Int) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbbuf.read_u16")
+
+// A little-endian `u32` at an offset, checked for bounds and
+// alignment.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+//
+// fn main() [io]
+//     match fbbuf.read_u32(fbbuf.buffer(bytes.zeros(8)), 0)
+//         Ok(v)  => println("${v}")
+//         Err(e) => println(e.message())
+// ```
+pub fn read_u32(b: FbBuf, at: Int) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbbuf.read_u32")
+
+// A little-endian `i64` at an offset, checked for bounds and
+// alignment.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+//
+// fn main() [io]
+//     match fbbuf.read_i64(fbbuf.buffer(bytes.zeros(8)), 0)
+//         Ok(v)  => println("${v}")
+//         Err(e) => println(e.message())
+// ```
+pub fn read_i64(b: FbBuf, at: Int) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbbuf.read_i64")
+
+// A little-endian `f64` at an offset, checked for bounds and
+// alignment.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+//
+// fn main() [io]
+//     match fbbuf.read_f64(fbbuf.buffer(bytes.zeros(8)), 0)
+//         Ok(v)  => println("${v}")
+//         Err(e) => println(e.message())
+// ```
+pub fn read_f64(b: FbBuf, at: Int) -> Result<Float, FbFault> []
+    todo("flatbuffers-nv.fbbuf.read_f64")
+
+// Follow a uoffset at `at`: `at + read_u32(at)`.
+//
+// The one piece of arithmetic every reference in the format is.  A
+// uoffset is relative to ITS OWN POSITION and always forward, which is
+// what lets a subtree be written once and referenced from several
+// places.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+//
+// fn main() [io]
+//     match fbbuf.follow(fbbuf.buffer(bytes.zeros(8)), 0)
+//         Ok(p)  => println("${p}")
+//         Err(e) => println(e.message())
+// ```
+pub fn follow(b: FbBuf, at: Int) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbbuf.follow")
+
+// Whether `at` is aligned to `align` bytes.
+//
+// ```novo
+// use fbbuf
+//
+// fn main() [io]
+//     println("${fbbuf.is_aligned(8, 4)}")
+// ```
+pub fn is_aligned(at: Int, align: Int) -> Bool []
+    todo("flatbuffers-nv.fbbuf.is_aligned")
+
+// `n` rounded up to the next multiple of `align`.
+//
+// `FbBadParameter` when `align` is not a power of two.
+//
+// ```novo
+// use fbbuf
+//
+// fn main() [io]
+//     match fbbuf.align_up(5, 4)
+//         Ok(n)  => println("${n}")
+//         Err(e) => println(e.message())
+// ```
+pub fn align_up(n: Int, align: Int) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbbuf.align_up")
+
+// Whether an offset is inside the buffer, with `n` bytes of room.
+//
+// The bounds check every accessor makes, published so that a caller
+// walking a buffer with the unchecked accessors can make it once for a
+// region rather than once per field.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+//
+// fn main() [io]
+//     println("${fbbuf.in_bounds(fbbuf.buffer(bytes.zeros(8)), 0, 4)}")
+// ```
+pub fn in_bounds(b: FbBuf, at: Int, n: Int) -> Bool []
+    todo("flatbuffers-nv.fbbuf.in_bounds")

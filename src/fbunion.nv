@@ -1,0 +1,252 @@
+// fbunion.nv — unions, which are two fields pretending to be one, and
+// the enums they are built on.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// A UNION IS TWO VTABLE SLOTS.  A field declared `weapon:Equipment` in
+// a `.fbs` schema becomes `weapon_type`, a `u8` naming which member,
+// and `weapon`, a uoffset to the table.  They are adjacent slots, the
+// type first, and the schema's generated accessors hide it.  This
+// package does not hide it, because a reader without generated code
+// has to know: reading `weapon` without `weapon_type` is reading a
+// table of an unknown type.
+//
+// AND THE FORMAT DOES NOT ENFORCE THEIR AGREEMENT.  A buffer whose type
+// byte is 3 and whose value slot is absent is a legal FlatBuffer that no
+// reader can make sense of.  `FbUnionHalfPresent` is that case, and
+// `read` is where it is caught — once, at the read, rather than
+// wherever the missing table would have been dereferenced.
+//
+// TYPE 0 IS ALWAYS `NONE`.  Every union's enum has an implicit `NONE =
+// 0` member that the schema does not write, and a union whose type byte
+// is 0 is absent.  A reader that treated 0 as the first declared member
+// is wrong on every union, and it is the single most common mistake in
+// a hand-written FlatBuffers reader.
+//
+// AN ENUM IS AN INTEGER AND ITS UNDERLYING TYPE IS THE SCHEMA'S CHOICE.
+// `enum Colour : byte` is one byte and `enum Big : long` is eight, so
+// an enum field cannot be read without knowing which — there is nothing
+// in the buffer that says.  `fbschema` is where that comes from, and
+// the accessors here take the size.
+
+use fberror
+use fbbuf
+use fbtable
+
+// The type value that means a union is absent: 0.
+//
+// Every union's enum has an implicit `NONE = 0` the schema does not
+// write.  A reader that treated 0 as the first declared member is
+// wrong on every union.
+pub const FB_UNION_NONE = 0
+
+// How many vtable slots a union field occupies: 2.
+//
+// The type byte first, then the value, in adjacent slots.
+pub const FB_UNION_SLOTS = 2
+
+// One union field read out of a table.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+// use fbunion
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t) =>
+//             match fbunion.read(t, fbtable.FB_FIRST_SLOT)
+//                 Ok(u)  => println("${u.type_id}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub struct FbUnion
+    // Which member: `FB_UNION_NONE` for absent, and otherwise the
+    // 1-based index of the member in the schema's union declaration.
+    type_id: Int
+    // Where the member's table is, or `-1` when the union is absent.
+    value_at: Int
+
+// Read a union from the slot its TYPE byte occupies.
+//
+// The value is read from the next slot, which is where the format puts
+// it.  `FbUnionHalfPresent`, which `fberror.is_malformed` answers true
+// for, when one of the two is there and the other is not — a legal FlatBuffer that no reader can make sense of, caught
+// here rather than wherever the missing table would have been
+// dereferenced.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+// use fbunion
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t) =>
+//             match fbunion.read(t, fbtable.FB_FIRST_SLOT)
+//                 Ok(u)  => println("${u.value_at}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn read(t: FbTable, type_slot: Int) -> Result<FbUnion, FbFault> []
+    todo("flatbuffers-nv.fbunion.read")
+
+// The slot a union's VALUE occupies, given its type slot:
+// `type_slot + 2`.
+//
+// ```novo
+// use fbtable
+// use fbunion
+//
+// fn main() [io]
+//     println("${fbunion.value_slot(fbtable.FB_FIRST_SLOT)}")
+// ```
+pub fn value_slot(type_slot: Int) -> Int []
+    todo("flatbuffers-nv.fbunion.value_slot")
+
+// Whether a union is absent.
+//
+// `type_id == FB_UNION_NONE`.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+// use fbunion
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t) =>
+//             match fbunion.read(t, fbtable.FB_FIRST_SLOT)
+//                 Ok(u)  => println("${fbunion.is_none(u)}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn is_none(u: FbUnion) -> Bool []
+    todo("flatbuffers-nv.fbunion.is_none")
+
+// The union's member as a table.
+//
+// `FbBadParameter` when the union is `NONE`, because there is no table
+// to answer and answering an empty one would be a table at offset
+// zero.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+// use fbunion
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t) =>
+//             match fbunion.read(t, fbtable.FB_FIRST_SLOT)
+//                 Ok(u) =>
+//                     match fbunion.as_table(u, fbbuf.buffer(bytes.zeros(16)))
+//                         Ok(_)  => println("a table")
+//                         Err(e) => println(e.message())
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn as_table(u: FbUnion, b: FbBuf) -> Result<FbTable, FbFault> []
+    todo("flatbuffers-nv.fbunion.as_table")
+
+// A vector of unions, which is also two fields.
+//
+// A `[Equipment]` field becomes a vector of `u8` type bytes and a
+// vector of uoffsets, in adjacent slots, and the two must be the same
+// length.  `FbUnionHalfPresent` when one is present and the other is
+// not, and `FbBadVectorLength` when their lengths disagree.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+// use fbunion
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t) =>
+//             match fbunion.read_vector(t, fbtable.FB_FIRST_SLOT)
+//                 Ok(v)  => println("${v.length}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub struct FbUnionVector
+    // Where the type bytes start.
+    types_at: Int
+    // Where the value uoffsets start.
+    values_at: Int
+    // How many members there are, which both vectors must agree on.
+    length: Int
+
+// Read a vector of unions from the slot its TYPE vector occupies.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+// use fbunion
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t) =>
+//             match fbunion.read_vector(t, fbtable.FB_FIRST_SLOT)
+//                 Ok(v)  => println("${v.types_at}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn read_vector(t: FbTable, type_slot: Int) -> Result<FbUnionVector, FbFault> []
+    todo("flatbuffers-nv.fbunion.read_vector")
+
+// Member `i` of a vector of unions.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+// use fbunion
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t) =>
+//             match fbunion.read_vector(t, fbtable.FB_FIRST_SLOT)
+//                 Ok(v) =>
+//                     match fbunion.vector_get(v, fbbuf.buffer(bytes.zeros(16)), 0)
+//                         Ok(u)  => println("${u.type_id}")
+//                         Err(e) => println(e.message())
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn vector_get(v: FbUnionVector, b: FbBuf, i: Int) -> Result<FbUnion, FbFault> []
+    todo("flatbuffers-nv.fbunion.vector_get")
+
+// An enum field, read at the width its schema declares.
+//
+// `size` is 1, 2, 4 or 8, because `enum Colour : byte` and
+// `enum Big : long` are different widths and NOTHING IN THE BUFFER
+// SAYS WHICH.  A reader without the schema cannot read an enum field
+// at all, which is why `fbschema` exists and why this takes the size
+// rather than guessing four.
+//
+// `FbBadParameter` for a size that is not one of the four.
+//
+// ```novo
+// use std.bytes
+// use fbbuf
+// use fbtable
+// use fbunion
+//
+// fn main() [io]
+//     match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+//         Ok(t) =>
+//             match fbunion.field_enum(t, fbtable.FB_FIRST_SLOT, 1, 0)
+//                 Ok(v)  => println("${v}")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn field_enum(t: FbTable, slot: Int, size: Int, default: Int) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbunion.field_enum")

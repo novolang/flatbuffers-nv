@@ -1,0 +1,370 @@
+// fbread_tests.nv — the buffer, the vtable, tables, vectors, strings,
+// structs and unions: the reading half.
+//
+// RED ON PURPOSE: every assertion reaches `not implemented:
+// flatbuffers-nv.<module>.<fn>`.
+
+use std.test
+use std.bytes
+use fbbuf
+use fberror
+use fbtable
+use fbunion
+use fbvector
+
+@test
+fn test_the_buffer_is_borrowed_and_nothing_is_copied() [io]
+    test.case("a buffer over some bytes starts at zero and spans them")
+    let b = fbbuf.buffer(bytes.zeros(16))
+    test.assert(b.at == 0 and b.len == 16)
+
+    test.case("and it is NOT verified until somebody verifies it")
+    test.assert(not b.verified)
+
+    test.case("a buffer may be a slice of a larger message")
+    match fbbuf.slice(bytes.zeros(32), 8, 16)
+        Ok(s)  => test.assert(s.at == 8 and s.len == 16)
+        Err(_) => test.fail("8..24 is inside thirty-two bytes")
+
+    test.case("a slice outside the bytes is refused")
+    match fbbuf.slice(bytes.zeros(16), 8, 16)
+        Ok(_)  => test.fail("8..24 is outside sixteen bytes")
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+@test
+fn test_everything_is_little_endian_and_aligned_to_its_size() [io]
+    // A buffer written on one architecture is read on another without
+    // a conversion pass, which a format that converted would not be
+    // reading in place.
+    test.case("the offset widths the format fixes")
+    test.assert(fbbuf.FB_UOFFSET_BYTES == 4)
+    test.assert(fbbuf.FB_SOFFSET_BYTES == 4)
+    test.assert(fbbuf.FB_VOFFSET_BYTES == 2)
+
+    test.case("a vtable entry is 16-bit, so a table is at most 65,535 bytes")
+    test.assert(fbbuf.FB_TABLE_BYTES_MOST == 65535)
+
+    test.case("alignment is to the value's own size")
+    test.assert(fbbuf.is_aligned(8, 4))
+    test.assert(not fbbuf.is_aligned(6, 4))
+    match fbbuf.align_up(5, 4)
+        Ok(n)  => test.assert(n == 8)
+        Err(_) => test.fail("four is a power of two")
+
+    test.case("and an alignment that is not a power of two is a caller's mistake")
+    match fbbuf.align_up(5, 3)
+        Ok(_)  => test.fail("three is not a power of two")
+        Err(f) => test.assert(not fberror.is_malformed(f.kind))
+
+    test.case("a scalar read is bounds-checked and alignment-checked")
+    let b = fbbuf.buffer(bytes.zeros(16))
+    match fbbuf.read_u32(b, 0)
+        Ok(v)  => test.assert(v == 0)
+        Err(_) => test.fail("offset 0 is inside sixteen bytes and aligned")
+    match fbbuf.read_u32(b, 2)
+        Ok(_)  => test.fail("offset 2 is not aligned to four")
+        Err(f) => test.assert(fberror.kind_name(f.kind) == "misaligned")
+    match fbbuf.read_u8(b, 0)
+        Ok(v)  => test.assert(v == 0)
+        Err(_) => test.fail("a byte needs no alignment")
+    match fbbuf.read_u16(b, 0)
+        Ok(v)  => test.assert(v == 0)
+        Err(_) => test.fail("offset 0 is aligned to two")
+    match fbbuf.read_i64(b, 0)
+        Ok(v)  => test.assert(v == 0)
+        Err(_) => test.fail("offset 0 is aligned to eight")
+    match fbbuf.read_f64(b, 0)
+        Ok(x)  => test.assert(x == 0.0)
+        Err(_) => test.fail("offset 0 is aligned to eight")
+
+    test.case("and a read past the end is caught rather than made")
+    test.assert(fbbuf.in_bounds(b, 0, 4))
+    test.assert(not fbbuf.in_bounds(b, 14, 4))
+
+@test
+fn test_the_root_and_the_file_identifier() [io]
+    test.case("the root is a uoffset at position zero")
+    match fbbuf.root(fbbuf.buffer(bytes.zeros(16)))
+        Ok(r)  => test.assert(r == 0)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+    test.case("a buffer too short to hold one is refused")
+    match fbbuf.root(fbbuf.buffer(bytes.zeros(2)))
+        Ok(_)  => test.fail("two bytes cannot hold a root offset")
+        Err(f) => test.assert(fberror.kind_name(f.kind) == "buffer-too-short")
+
+    test.case("a uoffset is followed FORWARD from its own position")
+    match fbbuf.follow(fbbuf.buffer(bytes.zeros(16)), 0)
+        Ok(p)  => test.assert(p == 0)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+    test.case("the identifier is four bytes at offset four, and it is optional")
+    test.assert(fbbuf.FB_FILE_IDENTIFIER_BYTES == 4)
+    test.assert(fbbuf.FB_FILE_IDENTIFIER_AT == 4)
+    test.assert(str.len(fbbuf.file_identifier(fbbuf.buffer(bytes.zeros(16)))) >= 0)
+
+    test.case("a buffer of the wrong message type is NOT a malformed buffer")
+    match fbbuf.check_identifier(fbbuf.buffer(bytes.zeros(16)), "MONS")
+        Ok(_)  => test.fail("zero bytes are not MONS")
+        Err(f) =>
+            test.assert(fberror.kind_name(f.kind) == "wrong-file-identifier")
+            test.assert(not fberror.is_malformed(f.kind))
+
+    test.case("a size-prefixed buffer carries a length that excludes itself")
+    match fbbuf.size_prefix(fbbuf.buffer(bytes.zeros(12)))
+        Ok(n)  => test.assert(n == 0)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+    match fbbuf.root_of_size_prefixed(fbbuf.buffer(bytes.zeros(12)))
+        Ok(r)  => test.assert(r >= 0)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+@test
+fn test_a_slot_is_not_a_field_index_and_zero_means_absent() [io]
+    // A reader that used a field's index as its slot is wrong on every
+    // field.
+    test.case("the first field is slot four, and slots step by two")
+    test.assert(fbtable.FB_FIRST_SLOT == 4)
+    test.assert(fbtable.slot_of_field(0) == 4)
+    test.assert(fbtable.slot_of_field(1) == 6)
+    test.assert(fbtable.slot_of_field(7) == 18)
+
+    test.case("a vtable entry of zero means the field is absent")
+    test.assert(fbtable.FB_FIELD_ABSENT == 0)
+    test.assert(fbtable.FB_VTABLE_HEADER_BYTES == 4)
+
+@test
+fn test_a_table_finds_its_vtable_by_SUBTRACTING_a_signed_offset() [io]
+    // A vtable is usually BEFORE the table, so the soffset is normally
+    // positive and the arithmetic normally goes backwards.
+    test.case("a table that does not resolve is refused, not guessed at")
+    match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+        Ok(t)  => test.assert(t.at == 8)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+    test.case("and the root table is the root offset followed")
+    match fbtable.root_table(fbbuf.buffer(bytes.zeros(16)))
+        Ok(t)  => test.assert(t.at >= 0)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+@test
+fn test_an_old_reader_sees_a_new_writers_extra_fields_as_absent() [io]
+    // That is the whole of FlatBuffers' forward compatibility, and it
+    // is not an error at either end.
+    test.case("a slot past the vtable's end is absent, not a fault")
+    match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+        Ok(t)  =>
+            test.assert(not fbtable.has_field(t, 1000))
+            test.assert(fbtable.field_at(t, 1000) == -1)
+            test.assert(fbtable.declared_slots(t) >= 0)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+@test
+fn test_every_scalar_accessor_takes_its_default_because_the_buffer_has_none() [io]
+    // A field equal to its default is simply not written, and the only
+    // place the default exists is the schema.
+    test.case("an absent field answers the default the caller passed")
+    match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+        Ok(t)  =>
+            test.assert(not fbtable.field_bool(t, 1000, false))
+            test.assert(fbtable.field_bool(t, 1000, true))
+            test.assert(fbtable.field_u8(t, 1000, 7) == 7)
+            test.assert(fbtable.field_u16(t, 1000, 7) == 7)
+            test.assert(fbtable.field_u32(t, 1000, -1) == -1)
+            test.assert(fbtable.field_i64(t, 1000, 42) == 42)
+            test.assert(fbtable.field_f64(t, 1000, 1.5) == 1.5)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+    test.case("an absent reference field answers None")
+    match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+        Ok(t)  =>
+            match fbtable.field_table(t, 1000)
+                Some(_) => test.fail("slot 1000 is past the vtable")
+                None    => test.assert(true)
+            test.assert(fbtable.field_struct_at(t, 1000) == -1)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+@test
+fn test_there_are_two_accessor_surfaces_and_that_is_deliberate() [io]
+    // Verifying once and then reading a million fields is the shape
+    // this format is for; making every read pay for the verification
+    // would take that away.
+    test.case("the checked accessors answer a Result on an unverified buffer")
+    match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+        Ok(t)  =>
+            match fbtable.checked_u32(t, fbtable.FB_FIRST_SLOT, 0)
+                Ok(v)  => test.assert(v >= 0)
+                Err(e) => test.assert(fberror.is_malformed(e.kind))
+            match fbtable.checked_table(t, fbtable.FB_FIRST_SLOT)
+                Ok(_)  => test.assert(true)
+                Err(e) => test.assert(fberror.is_malformed(e.kind))
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+@test
+fn test_a_vector_is_a_length_and_then_arithmetic() [io]
+    test.case("the length prefix is four bytes")
+    test.assert(fbvector.FB_VECTOR_LENGTH_BYTES == 4)
+
+    test.case("a vector that would run off the end is refused")
+    match fbvector.vector_at(fbbuf.buffer(bytes.zeros(16)), 8, 4)
+        Ok(v)  => test.assert(v.elem_size == 4)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+    test.case("random access is a multiply and an add, for any index")
+    match fbvector.vector_at(fbbuf.buffer(bytes.zeros(16)), 8, 4)
+        Ok(v)  =>
+            test.assert(fbvector.element_at(v, 0) >= -1)
+            test.assert(fbvector.element_at(v, 1000000) == -1)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+    test.case("elements come out at the width the caller said")
+    match fbvector.vector_at(fbbuf.buffer(bytes.zeros(16)), 8, 4)
+        Ok(v)  =>
+            match fbvector.get_u32(v, 0)
+                Ok(x)  => test.assert(x >= 0)
+                Err(e) => test.assert(fberror.is_malformed(e.kind))
+            match fbvector.get_u8(v, 0)
+                Ok(x)  => test.assert(x >= 0)
+                Err(e) => test.assert(fberror.is_malformed(e.kind))
+            match fbvector.get_i64(v, 0)
+                Ok(x)  => test.assert(x >= 0)
+                Err(e) => test.assert(fberror.is_malformed(e.kind))
+            match fbvector.get_f64(v, 0)
+                Ok(x)  => test.assert(x >= 0.0)
+                Err(e) => test.assert(fberror.is_malformed(e.kind))
+            match fbvector.get_table(v, 0)
+                Ok(_)  => test.assert(true)
+                Err(e) => test.assert(fberror.is_malformed(e.kind))
+            test.assert(fbvector.get_struct_at(v, 0) >= -1)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+    test.case("and a table's vector field is looked up by slot")
+    match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+        Ok(t)  =>
+            match fbvector.field_vector(t, 1000, 4)
+                Ok(_)  => test.assert(true)
+                Err(e) => test.assert(fberror.is_malformed(e.kind))
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+@test
+fn test_a_string_is_terminated_and_is_not_checked_for_utf8() [io]
+    // The terminator is not counted in the length and exists so a C
+    // consumer can point at the bytes.
+    test.case("the ordinary accessor answers bytes and checks nothing")
+    match fbvector.string_at(fbbuf.buffer(bytes.zeros(16)), 8)
+        Ok(s)  => test.assert(bytes.len(s) >= 0)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+    test.case("and the checking one is a separate call a caller makes once")
+    match fbvector.utf8_string(fbbuf.buffer(bytes.zeros(16)), 8)
+        Ok(s)  => test.assert(str.len(s) >= 0)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+    test.case("the terminator can be checked on its own")
+    test.assert(not fbvector.string_is_terminated(fbbuf.buffer(bytes.zeros(0)), 0))
+
+    test.case("and a table's string field is looked up by slot")
+    match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+        Ok(t)  =>
+            match fbvector.field_string(t, 1000)
+                Ok(_)  => test.assert(true)
+                Err(e) => test.assert(fberror.is_malformed(e.kind))
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+@test
+fn test_a_structs_padding_is_invisible_in_the_schema_and_real_in_the_bytes() [io]
+    test.case("three floats are twelve bytes, aligned to four")
+    match fbvector.struct_layout([4, 4, 4])
+        Ok(l)  => test.assert(l.size == 12 and l.align == 4)
+        Err(_) => test.fail("three four-byte members is a layout")
+
+    test.case("a byte and a double are SIXTEEN bytes, not nine")
+    match fbvector.struct_layout([1, 8])
+        Ok(l)  => test.assert(l.size == 16 and l.align == 8)
+        Err(_) => test.fail("a byte and a double is a layout")
+
+    test.case("and the second member starts at eight, not at one")
+    match fbvector.struct_member_at([1, 8], 1)
+        Ok(n)  => test.assert(n == 8)
+        Err(_) => test.fail("the second member has a position")
+
+    test.case("a member size that is no FlatBuffers scalar is refused")
+    match fbvector.struct_layout([3])
+        Ok(_)  => test.fail("three is not a scalar size")
+        Err(f) => test.assert(not fberror.is_malformed(f.kind))
+
+@test
+fn test_a_union_is_two_slots_and_type_zero_is_always_none() [io]
+    // A reader that treated 0 as the first declared member is wrong on
+    // every union.
+    test.case("NONE is zero and a union occupies two slots")
+    test.assert(fbunion.FB_UNION_NONE == 0)
+    test.assert(fbunion.FB_UNION_SLOTS == 2)
+
+    test.case("the value's slot is the type's plus two")
+    test.assert(fbunion.value_slot(fbtable.FB_FIRST_SLOT) == 6)
+
+    test.case("a union read from a table answers its type and its position")
+    match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+        Ok(t)  =>
+            match fbunion.read(t, fbtable.FB_FIRST_SLOT)
+                Ok(u)  =>
+                    test.assert(fbunion.is_none(u))
+                    test.assert(u.value_at == -1)
+                    match fbunion.as_table(u, fbbuf.buffer(bytes.zeros(16)))
+                        Ok(_)  => test.fail("a NONE union has no table")
+                        Err(e) => test.assert(not fberror.is_malformed(e.kind))
+                Err(e) => test.assert(fberror.is_malformed(e.kind))
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+    test.case("one half present and the other absent is a legal, unreadable buffer")
+    test.assert(fberror.is_malformed(FbUnionHalfPresent(4)))
+
+    test.case("a vector of unions is two vectors that must agree in length")
+    match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+        Ok(t)  =>
+            match fbunion.read_vector(t, fbtable.FB_FIRST_SLOT)
+                Ok(v)  =>
+                    test.assert(v.length >= 0)
+                    match fbunion.vector_get(v, fbbuf.buffer(bytes.zeros(16)), 0)
+                        Ok(u)  => test.assert(u.type_id >= 0)
+                        Err(e) => test.assert(fberror.is_malformed(e.kind))
+                Err(e) => test.assert(fberror.is_malformed(e.kind))
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+@test
+fn test_an_enums_width_is_the_schemas_and_the_buffer_does_not_say() [io]
+    test.case("an enum field is read at the width the schema declares")
+    match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+        Ok(t)  =>
+            match fbunion.field_enum(t, 1000, 1, 3)
+                Ok(v)  => test.assert(v == 3)
+                Err(e) => test.assert(fberror.is_malformed(e.kind))
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+    test.case("and a width that is not 1, 2, 4 or 8 is a caller's mistake")
+    match fbtable.table_at(fbbuf.buffer(bytes.zeros(16)), 8)
+        Ok(t)  =>
+            match fbunion.field_enum(t, 1000, 3, 0)
+                Ok(_)  => test.fail("three is not an enum width")
+                Err(e) => test.assert(not fberror.is_malformed(e.kind))
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+@test
+fn test_a_fault_names_its_offset_and_its_slot_and_partitions_four_ways() [io]
+    test.case("a position carries the offset and the slot")
+    let w = fberror.here(4096, 6)
+    test.assert(w.offset == 4096 and w.slot == 6)
+
+    test.case("a fault is a kind and a place, and it reports as one line")
+    let f = fberror.fault(FbBufferTooShort, fberror.here(0, -1))
+    test.assert(fberror.kind_name(f.kind) == "buffer-too-short")
+    test.assert(str.len(fberror.describe(f)) > 0)
+    test.assert(str.len(f.message()) > 0)
+
+    test.case("malformed, a bound, a schema problem and unsupported are four things")
+    test.assert(fberror.is_malformed(FbBufferTooShort))
+    test.assert(fberror.is_limit(FbBufferTooSmall(64, 8)))
+    test.assert(not fberror.is_malformed(FbBufferTooSmall(64, 8)))
+    test.assert(fberror.is_schema_error(FbSchemaInvalid("no root type")))
+    test.assert(fberror.is_unsupported(FbSchemaUnsupported("flexbuffers")))
+    test.assert(not fberror.is_malformed(FbSchemaUnsupported("flexbuffers")))

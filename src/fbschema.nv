@@ -1,0 +1,454 @@
+// fbschema.nv — the `.fbs` schema language, read into a value, with no
+// code generated.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// FLATBUFFERS' REFERENCE TOOLING IS A CODE GENERATOR.  `flatc` reads a
+// `.fbs` and writes accessor classes in one of a dozen languages.  That
+// is not what this package does.  Here a schema is a VALUE at run time,
+// and reading a buffer with it is `fbaccess`: a field by NAME, with its
+// type and its default taken from the schema rather than from generated
+// source.
+//
+// WHY THAT IS THE RIGHT SHAPE HERE, and not merely the easy one.  Three
+// things a generator cannot do: read a schema that arrives at run time,
+// which is what a generic tool — a dumper, a converter, a schema
+// registry — is made of; read a buffer whose schema a caller chose from
+// several; and be a library at all, because a generator's output is
+// source and source is a build step.  A generator can be written ON TOP
+// of this module, and that is a program rather than a row.
+//
+// THE THREE THINGS THE SCHEMA SUPPLIES THAT THE BYTES DO NOT.
+//
+//   Which slot a name is.  A buffer has vtable slots and no names.
+//   What a slot's type is.  A `u32` field and a `float` field are four
+//   bytes each and nothing distinguishes them.
+//   What a field's DEFAULT is.  A field equal to its default is not
+//   written at all, so the default exists only here — and a reader that
+//   assumed zero where the schema said `-1` reads the wrong value with
+//   nothing to say so.
+//
+// AND ONE RULE THE SCHEMA CARRIES THAT THE FORMAT DEPENDS ON: slots are
+// never reordered and never reused.  `id:` pins a field's slot
+// explicitly, and a schema that uses it on one field must use it on all
+// of them.  `check` refuses a schema that breaks it, because the
+// consequence is silent: an old buffer read through a reordered schema
+// produces values of the wrong fields.
+//
+// `flexbuffers` IS NOT HERE.  It is a second, schemaless format that
+// shares a name and nothing else: a self-describing value written back
+// to front with a type byte per value.  It has its own reading rules,
+// its own builder and no vtables at all, and putting it in this package
+// would be putting two formats in one.  `FbSchemaUnsupported` names it,
+// and the README says where it would go.
+
+use fberror
+
+// A type in a `.fbs` schema.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     println(fbschema.base_name(FbTypeUint))
+// ```
+pub enum FbBaseType
+    // `bool`, one byte.
+    FbTypeBool
+    // `byte` / `int8`, one signed byte.
+    FbTypeByte
+    // `ubyte` / `uint8`, one unsigned byte.
+    FbTypeUbyte
+    // `short` / `int16`.
+    FbTypeShort
+    // `ushort` / `uint16`.
+    FbTypeUshort
+    // `int` / `int32`.
+    FbTypeInt
+    // `uint` / `uint32`.
+    FbTypeUint
+    // `long` / `int64`.
+    FbTypeLong
+    // `ulong` / `uint64`.
+    FbTypeUlong
+    // `float` / `float32`.
+    FbTypeFloat
+    // `double` / `float64`.
+    FbTypeDouble
+    // `string`, a uoffset to a length-prefixed, zero-terminated byte
+    // sequence.
+    FbTypeString
+    // A vector of something.
+    FbTypeVector
+    // A named table: a uoffset, and the thing that may grow.
+    FbTypeTable
+    // A named struct: INLINE, fixed size, and the thing that may never
+    // grow.
+    FbTypeStruct
+    // A named enum, whose width is its declared underlying type.
+    FbTypeEnum
+    // A named union: two slots, a type byte and a uoffset.
+    FbTypeUnion
+
+// The `.fbs` name for a base type: `"uint"`, `"string"`, `"table"`.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     println(fbschema.base_name(FbTypeDouble))
+// ```
+pub fn base_name(t: FbBaseType) -> Str []
+    todo("flatbuffers-nv.fbschema.base_name")
+
+// How many bytes a base type occupies where it is stored inline.
+//
+// One for the byte types, two, four or eight for the rest, and FOUR
+// for `string`, `table`, `vector` and `union` — because what is stored
+// is a uoffset.  Zero for `struct` and `enum`, whose sizes come from
+// their declarations.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     println("${fbschema.base_size(FbTypeDouble)}")
+// ```
+pub fn base_size(t: FbBaseType) -> Int []
+    todo("flatbuffers-nv.fbschema.base_size")
+
+// Whether a base type is stored inline in its table rather than
+// through an offset.
+//
+// True for the scalars and for `struct`.  The predicate the layout
+// rules are written in.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     println("${fbschema.is_inline(FbTypeStruct)}")
+// ```
+pub fn is_inline(t: FbBaseType) -> Bool []
+    todo("flatbuffers-nv.fbschema.is_inline")
+
+// One field of a table or a struct.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; }")
+//         Ok(s)  => println("${fbschema.table_count(s)}")
+//         Err(e) => println(e.message())
+// ```
+pub struct FbField
+    // The field's name, as written.
+    name: Str
+    // The field's base type.
+    base: FbBaseType
+    // The named type, for `FbTypeTable`, `FbTypeStruct`, `FbTypeEnum`
+    // and `FbTypeUnion`; `""` otherwise.
+    type_name: Str
+    // The element's base type, for `FbTypeVector`.
+    element: FbBaseType
+    // The element's named type, for a vector of a named thing.
+    element_name: Str
+    // The vtable slot this field occupies.
+    //
+    // FROM THE `id:` ATTRIBUTE WHERE THE SCHEMA GIVES ONE, and from
+    // declaration order otherwise.  It is the one number that must
+    // never change, because a reordered slot reads an old buffer's
+    // other field and nothing says so.
+    slot: Int
+    // The field's default, as the text the schema wrote, or `""`.
+    //
+    // THE ONLY PLACE A DEFAULT EXISTS.  A field equal to its default is
+    // not written into the buffer at all.
+    default_text: Str
+    // Whether the schema marks the field `(required)`, which is the
+    // format's one per-field obligation and the only thing a verifier
+    // needs a schema for.
+    required: Bool
+    // Whether the schema marks the field `(deprecated)`.  A deprecated
+    // field keeps its slot forever — that is the point — and is not
+    // read.
+    deprecated: Bool
+    // Whether the schema marks the field `(key)`, which makes a vector
+    // of this table sorted by it and binary-searchable.
+    is_key: Bool
+
+// A table or struct declaration.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; }")
+//         Ok(s) =>
+//             match fbschema.table_named(s, "T")
+//                 Some(t) => println("${t.is_struct}")
+//                 None    => println("no such table")
+//         Err(e) => println(e.message())
+// ```
+pub struct FbObject
+    // The declared name.
+    name: Str
+    // Whether it was declared `struct` rather than `table`.
+    //
+    // A struct is inline, fixed-size and may never grow; a table is
+    // through an offset and grows by adding slots.  The single most
+    // consequential word in a `.fbs` file.
+    is_struct: Bool
+    // The fields, in declaration order.
+    fields: [FbField]
+    // The struct's total size in bytes, padded; zero for a table.
+    struct_size: Int
+    // The struct's alignment; zero for a table.
+    struct_align: Int
+
+// An enum or union declaration.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("enum E : byte { A, B }")
+//         Ok(s)  => println("${fbschema.enum_count(s)}")
+//         Err(e) => println(e.message())
+// ```
+pub struct FbEnum
+    // The declared name.
+    name: Str
+    // Whether it was declared `union` rather than `enum`.
+    is_union: Bool
+    // The underlying integer type, for an enum.  `FbTypeUbyte` for a
+    // union, whose type byte is always one byte.
+    //
+    // NOTHING IN A BUFFER SAYS AN ENUM'S WIDTH, so a reader without
+    // this cannot read an enum field at all.
+    underlying: FbBaseType
+    // The member names, in declaration order.
+    members: [Str]
+    // The member values.  For an enum these are the schema's, which
+    // need not be consecutive; for a union they are 1, 2, 3 … because
+    // 0 is the implicit `NONE`.
+    values: [Int]
+
+// A whole `.fbs` schema.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; } root_type T;")
+//         Ok(s)  => println(s.root_type)
+//         Err(e) => println(e.message())
+// ```
+pub struct FbSchema
+    // Every table and struct, in declaration order.
+    objects: [FbObject]
+    // Every enum and union, in declaration order.
+    enums: [FbEnum]
+    // The `root_type` declaration, or `""`.
+    root_type: Str
+    // The `file_identifier` declaration, or `""`.
+    //
+    // The four bytes at offset 4 of a buffer, and the only thing that
+    // says what KIND of message it is.
+    file_identifier: Str
+    // The `file_extension` declaration, or `""`.
+    file_extension: Str
+    // The `namespace` in force, or `""`.
+    namespace: Str
+
+// Parse a `.fbs` schema.
+//
+// Every fault here is about the schema rather than about a buffer, so
+// `fberror.is_schema_error` answers true for it.
+//
+// `FbSchemaSyntax` with a line number for text that does not parse,
+// `FbSchemaInvalid` for a schema that parses and does not make sense —
+// a type that is not declared, a union member that is not a table, a
+// `struct` with a `string` field, two fields with the same id — and
+// `FbSchemaUnsupported` for a declaration this package does not
+// implement.
+//
+// `include` is NOT followed: an include is a file read, this package
+// is `core`, and a caller that has several files concatenates them or
+// resolves the includes itself.  A schema with one is
+// `FbSchemaUnsupported("include")`, which says so rather than silently
+// reading a schema with a type missing.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; } root_type T;")
+//         Ok(s)  => println("${fbschema.table_count(s)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn parse(text: Str) -> Result<FbSchema, FbFault> []
+    todo("flatbuffers-nv.fbschema.parse")
+
+// Check a parsed schema's rules.
+//
+// `parse` already refuses what it can see as it goes; this is the pass
+// over the whole schema: every named type resolves, no two fields of
+// one table share a slot, a schema that uses `id:` uses it on every
+// field of that table, a `struct` holds only scalars and structs, a
+// union's members are all tables, and `root_type` names a table.
+//
+// THE RULE WHOSE CONSEQUENCE IS SILENT is the slot one.  An old buffer
+// read through a schema whose slots moved produces values of the wrong
+// fields, with nothing anywhere to say so — which is why it is checked
+// here rather than trusted.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; } root_type T;")
+//         Ok(s) =>
+//             match fbschema.check(s)
+//                 Ok(_)  => println("sound")
+//                 Err(e) => println(e.message())
+//         Err(e) => println(e.message())
+// ```
+pub fn check(s: FbSchema) -> Result<Int, FbFault> []
+    todo("flatbuffers-nv.fbschema.check")
+
+// How many tables and structs the schema declares.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; }")
+//         Ok(s)  => println("${fbschema.table_count(s)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn table_count(s: FbSchema) -> Int []
+    todo("flatbuffers-nv.fbschema.table_count")
+
+// How many enums and unions the schema declares.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("enum E : byte { A, B }")
+//         Ok(s)  => println("${fbschema.enum_count(s)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn enum_count(s: FbSchema) -> Int []
+    todo("flatbuffers-nv.fbschema.enum_count")
+
+// The table or struct of a name, or `None`.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; }")
+//         Ok(s) =>
+//             match fbschema.table_named(s, "T")
+//                 Some(t) => println(t.name)
+//                 None    => println("no such table")
+//         Err(e) => println(e.message())
+// ```
+pub fn table_named(s: FbSchema, name: Str) -> ?FbObject []
+    todo("flatbuffers-nv.fbschema.table_named")
+
+// The enum or union of a name, or `None`.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("enum E : byte { A, B }")
+//         Ok(s) =>
+//             match fbschema.enum_named(s, "E")
+//                 Some(e) => println(e.name)
+//                 None    => println("no such enum")
+//         Err(e) => println(e.message())
+// ```
+pub fn enum_named(s: FbSchema, name: Str) -> ?FbEnum []
+    todo("flatbuffers-nv.fbschema.enum_named")
+
+// The schema's root table, or `None` when it declares no `root_type`.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; } root_type T;")
+//         Ok(s) =>
+//             match fbschema.root_object(s)
+//                 Some(t) => println(t.name)
+//                 None    => println("no root type")
+//         Err(e) => println(e.message())
+// ```
+pub fn root_object(s: FbSchema) -> ?FbObject []
+    todo("flatbuffers-nv.fbschema.root_object")
+
+// A table's field of a name, or `None`.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; }")
+//         Ok(s) =>
+//             match fbschema.table_named(s, "T")
+//                 Some(t) =>
+//                     match fbschema.field_named(t, "a")
+//                         Some(f) => println("${f.slot}")
+//                         None    => println("no such field")
+//                 None    => println("no such table")
+//         Err(e) => println(e.message())
+// ```
+pub fn field_named(o: FbObject, name: Str) -> ?FbField []
+    todo("flatbuffers-nv.fbschema.field_named")
+
+// The vtable slot a field of a name occupies, or `-1`.
+//
+// The lookup `fbaccess` is built on, and the one a caller writing its
+// own reader wants: a name in, a slot out, resolved once and then used
+// a million times.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; }")
+//         Ok(s) =>
+//             match fbschema.table_named(s, "T")
+//                 Some(t) =>
+//                     let slot = fbschema.slot_of(t, "a")
+//                     println("${slot}")
+//                 None    => println("no such table")
+//         Err(e) => println(e.message())
+// ```
+pub fn slot_of(o: FbObject, name: Str) -> Int []
+    todo("flatbuffers-nv.fbschema.slot_of")
+
+// The schema, written back out as `.fbs` text.
+//
+// Round-trips what this package understands, which is what a schema
+// registry or a converter needs.  Attributes this package does not
+// implement are not carried and therefore not written, and
+// `FbSchemaUnsupported` at parse is what says so rather than letting
+// them vanish quietly.
+//
+// ```novo
+// use fbschema
+//
+// fn main() [io]
+//     match fbschema.parse("table T { a:int; }")
+//         Ok(s)  => println(fbschema.to_text(s))
+//         Err(e) => println(e.message())
+// ```
+pub fn to_text(s: FbSchema) -> Str []
+    todo("flatbuffers-nv.fbschema.to_text")

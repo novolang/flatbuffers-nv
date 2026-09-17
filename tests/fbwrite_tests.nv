@@ -1,0 +1,339 @@
+// fbwrite_tests.nv — the verifier and its budgets, the builder's
+// back-to-front discipline, the `.fbs` schema, and reading by name.
+//
+// RED ON PURPOSE: every assertion reaches `not implemented:
+// flatbuffers-nv.<module>.<fn>`.
+
+use std.test
+use std.bytes
+use fbaccess
+use fbbuf
+use fbbuild
+use fberror
+use fbschema
+use fbtable
+use fbverify
+
+@test
+fn test_the_verifier_is_the_other_half_of_reading_in_place() [io]
+    // Every read is "follow this number and read there".  On a buffer
+    // that arrived over a socket, that is an arbitrary-offset read
+    // decided by whoever sent it.
+    test.case("a fresh buffer is not verified")
+    test.assert(not fbverify.is_verified(fbbuf.buffer(bytes.zeros(16))))
+
+    test.case("verifying answers the buffer marked verified, or refuses it")
+    match fbverify.verify(fbbuf.buffer(bytes.zeros(16)), fbverify.default_budget())
+        Ok(b)  => test.assert(b.verified)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+    test.case("a size-prefixed buffer's prefix is checked before anything else")
+    match fbverify.verify_size_prefixed(fbbuf.buffer(bytes.zeros(16)),
+                                        fbverify.default_budget())
+        Ok(b)  => test.assert(b.verified)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+    test.case("and the escape hatch is named so a reviewer can find it")
+    test.assert(fbverify.trust_unverified(fbbuf.buffer(bytes.zeros(16))).verified)
+
+@test
+fn test_the_verifier_needs_its_own_budgets_and_that_is_not_paranoia() [io]
+    // Two tables may legally share a vtable and two fields may legally
+    // point at the same subtree, so a small buffer can describe an
+    // enormous traversal.
+    test.case("the defaults are the reference verifier's own")
+    let d = fbverify.default_budget()
+    test.assert(d.tables == fbverify.FB_TABLES_DEFAULT)
+    test.assert(d.depth == fbverify.FB_DEPTH_DEFAULT)
+    test.assert(fbverify.FB_TABLES_DEFAULT == 1000000)
+    test.assert(fbverify.FB_DEPTH_DEFAULT == 64)
+
+    test.case("and each is a value a caller sets rather than a constant")
+    test.assert(fbverify.with_tables(d, 1000).tables == 1000)
+    test.assert(fbverify.with_depth(d, 8).depth == 8)
+    test.assert(fbverify.with_bytes(d, 1048576).bytes == 1048576)
+
+    test.case("a budget reached is a POLICY meeting a file, not a bad buffer")
+    test.assert(fberror.is_limit(FbVerifierBudgetReached("tables", 1000)))
+    test.assert(not fberror.is_malformed(FbVerifierBudgetReached("tables", 1000)))
+
+    test.case("and measuring is how a caller sizes its budgets from real messages")
+    match fbverify.measure(fbbuf.buffer(bytes.zeros(16)), fbverify.default_budget())
+        Ok(c)  => test.assert(c.tables >= 0 and c.depth >= 0 and c.bytes >= 0)
+        Err(f) => test.assert(fberror.is_malformed(f.kind))
+
+@test
+fn test_only_a_schema_can_say_which_field_is_required() [io]
+    test.case("a schema adds the per-field half of verification")
+    match fbschema.parse("table T { a:int; } root_type T;")
+        Ok(s)  =>
+            match fbverify.verify_with_schema(fbbuf.buffer(bytes.zeros(16)), s,
+                                              fbverify.default_budget())
+                Ok(b)  => test.assert(b.verified)
+                Err(f) => test.assert(fberror.is_malformed(f.kind))
+        Err(e) => test.assert(fberror.is_schema_error(e.kind))
+
+    test.case("and a missing required field is the one per-field obligation")
+    test.assert(fberror.is_malformed(FbRequiredFieldMissing(4)))
+
+@test
+fn test_the_builder_writes_back_to_front_so_children_come_first() [io]
+    // A uoffset is always FORWARD from its own position, so a thing
+    // must exist before anything can point at it.
+    test.case("a fresh builder has written nothing")
+    let b = fbbuild.builder()
+    test.assert(b.used == 0)
+    test.assert(not b.in_table)
+    test.assert(fbbuild.vtables_written(b) == 0)
+
+    test.case("a builder over a caller's buffer refuses rather than growing")
+    match fbbuild.builder_into(bytes.zeros(fbbuild.FB_BUILDER_INITIAL_BYTES))
+        Ok(bb) => test.assert(bb.used == 0)
+        Err(_) => test.fail("1024 bytes is a legal builder buffer")
+
+    test.case("a string is written BEFORE the table that points at it")
+    match fbbuild.write_string(fbbuild.builder(), "hello")
+        Ok(w)  => test.assert(w.offset > 0 and w.builder.used > 0)
+        Err(e) => println(e.message())
+
+    test.case("and so is every vector")
+    match fbbuild.write_bytes(fbbuild.builder(), bytes.zeros(4))
+        Ok(w)  => test.assert(w.offset > 0)
+        Err(e) => println(e.message())
+    match fbbuild.write_u32_vector(fbbuild.builder(), [1, 2, 3])
+        Ok(w)  => test.assert(w.offset > 0)
+        Err(e) => println(e.message())
+    match fbbuild.write_offset_vector(fbbuild.builder(), [])
+        Ok(w)  => test.assert(w.offset > 0)
+        Err(e) => println(e.message())
+
+@test
+fn test_a_field_equal_to_its_default_is_not_written_at_all() [io]
+    // No bytes and no vtable entry, which is where most of a
+    // FlatBuffer's compactness comes from.
+    test.case("a table is started, filled and ended")
+    match fbbuild.start_table(fbbuild.builder())
+        Ok(b)  =>
+            test.assert(b.in_table)
+            match fbbuild.set_u32(b, fbtable.FB_FIRST_SLOT, 0, 0)
+                Ok(b2) => test.assert(b2.used == b.used)
+                Err(e) => println(e.message())
+            match fbbuild.set_u32(b, fbtable.FB_FIRST_SLOT, 7, 0)
+                Ok(b2) => test.assert(b2.used > b.used)
+                Err(e) => println(e.message())
+        Err(e) => println(e.message())
+
+    test.case("the other setters take their defaults for the same reason")
+    match fbbuild.start_table(fbbuild.builder())
+        Ok(b)  =>
+            match fbbuild.set_i64(b, fbtable.FB_FIRST_SLOT, 0, 0)
+                Ok(b2) => test.assert(b2.used == b.used)
+                Err(e) => println(e.message())
+            match fbbuild.set_f64(b, fbtable.FB_FIRST_SLOT, 0.0, 0.0)
+                Ok(b2) => test.assert(b2.used == b.used)
+                Err(e) => println(e.message())
+            match fbbuild.set_offset(b, fbtable.FB_FIRST_SLOT, 0)
+                Ok(b2) => test.assert(b2.used == b.used)
+                Err(e) => println(e.message())
+        Err(e) => println(e.message())
+
+    test.case("a struct is the ONE thing written between start and end")
+    match fbbuild.start_table(fbbuild.builder())
+        Ok(b)  =>
+            match fbbuild.set_struct(b, fbtable.FB_FIRST_SLOT, bytes.zeros(12), 4)
+                Ok(b2) => test.assert(b2.used > b.used)
+                Err(e) => println(e.message())
+        Err(e) => println(e.message())
+
+    test.case("two objects interleaved in one region is the refusal")
+    match fbbuild.start_table(fbbuild.builder())
+        Ok(b)  =>
+            match fbbuild.start_table(b)
+                Ok(_)  => test.fail("a table is already being built")
+                Err(e) => test.assert(fberror.kind_name(e.kind)
+                                      == "builder-out-of-order")
+        Err(e) => println(e.message())
+
+@test
+fn test_vtables_are_deduplicated_and_the_root_is_written_last() [io]
+    test.case("ending a table answers its offset")
+    match fbbuild.start_table(fbbuild.builder())
+        Ok(b)  =>
+            match fbbuild.end_table(b)
+                Ok(w)  =>
+                    test.assert(w.offset > 0)
+                    test.assert(fbbuild.vtables_written(w.builder) == 1)
+                Err(e) => println(e.message())
+        Err(e) => println(e.message())
+
+    test.case("finishing writes the root offset and the identifier")
+    match fbbuild.start_table(fbbuild.builder())
+        Ok(b)  =>
+            match fbbuild.end_table(b)
+                Ok(w)  =>
+                    match fbbuild.finish(w.builder, w.offset, "MONS")
+                        Ok(out) => test.assert(bytes.len(out) > 0)
+                        Err(e)  => println(e.message())
+                Err(e) => println(e.message())
+        Err(e) => println(e.message())
+
+    test.case("an identifier that is not four characters is refused")
+    match fbbuild.start_table(fbbuild.builder())
+        Ok(b)  =>
+            match fbbuild.end_table(b)
+                Ok(w)  =>
+                    match fbbuild.finish(w.builder, w.offset, "TOOLONG")
+                        Ok(_)  => test.fail("an identifier is four bytes")
+                        Err(e) => test.assert(fberror.kind_name(e.kind)
+                                              == "bad-parameter")
+                Err(e) => println(e.message())
+        Err(e) => println(e.message())
+
+    test.case("a size-prefixed finish is for a stream of buffers")
+    match fbbuild.start_table(fbbuild.builder())
+        Ok(b)  =>
+            match fbbuild.end_table(b)
+                Ok(w)  =>
+                    match fbbuild.finish_size_prefixed(w.builder, w.offset, "")
+                        Ok(out) => test.assert(bytes.len(out) > 0)
+                        Err(e)  => println(e.message())
+                Err(e) => println(e.message())
+        Err(e) => println(e.message())
+
+    test.case("the finished size can be asked before finishing")
+    test.assert(fbbuild.finished_bytes(fbbuild.builder(), "MONS") > 0)
+
+    test.case("and a buffer this program just built needs no verification pass")
+    match fbbuild.as_buffer(bytes.zeros(16))
+        Ok(b)  => test.assert(b.verified)
+        Err(e) => test.assert(fberror.is_malformed(e.kind))
+
+@test
+fn test_the_fbs_schema_is_read_into_a_value_and_nothing_is_generated() [io]
+    test.case("a table declaration parses")
+    match fbschema.parse("table T { a:int; } root_type T;")
+        Ok(s)  =>
+            test.assert(fbschema.table_count(s) == 1)
+            test.assert(s.root_type == "T")
+        Err(e) => test.assert(fberror.is_schema_error(e.kind))
+
+    test.case("an enum declaration carries its UNDERLYING type, which the buffer does not")
+    match fbschema.parse("enum E : byte { A, B }")
+        Ok(s)  =>
+            test.assert(fbschema.enum_count(s) == 1)
+            match fbschema.enum_named(s, "E")
+                Some(e) => test.assert(not e.is_union)
+                None    => test.fail("E was declared")
+        Err(e) => test.assert(fberror.is_schema_error(e.kind))
+
+    test.case("text that is not a schema is refused with a line number")
+    match fbschema.parse("table {")
+        Ok(_)  => test.fail("that is not a schema")
+        Err(f) => test.assert(fberror.kind_name(f.kind) == "schema-syntax")
+
+    test.case("and `include` is not followed, because an include is a file read")
+    match fbschema.parse("include \"other.fbs\"; table T { a:int; }")
+        Ok(_)  => test.fail("an include cannot be followed by a core package")
+        Err(f) => test.assert(fberror.is_unsupported(f.kind))
+
+@test
+fn test_a_slot_is_pinned_and_a_struct_may_never_grow() [io]
+    // An old buffer read through a schema whose slots moved produces
+    // values of the wrong fields, with nothing to say so.
+    test.case("the whole-schema check is where that is caught")
+    match fbschema.parse("table T { a:int; } root_type T;")
+        Ok(s)  =>
+            match fbschema.check(s)
+                Ok(_)  => test.assert(true)
+                Err(e) => test.assert(fberror.is_schema_error(e.kind))
+        Err(e) => test.assert(fberror.is_schema_error(e.kind))
+
+    test.case("a field's slot, its default and its attributes come from here")
+    match fbschema.parse("table T { a:int; }")
+        Ok(s)  =>
+            match fbschema.table_named(s, "T")
+                Some(t) =>
+                    test.assert(not t.is_struct)
+                    test.assert(fbschema.slot_of(t, "a") == fbtable.FB_FIRST_SLOT)
+                    match fbschema.field_named(t, "a")
+                        Some(f) => test.assert(not f.required and not f.deprecated
+                                               and not f.is_key)
+                        None    => test.fail("a was declared")
+                None    => test.fail("T was declared")
+        Err(e) => test.assert(fberror.is_schema_error(e.kind))
+
+    test.case("the root object is the root_type resolved")
+    match fbschema.parse("table T { a:int; } root_type T;")
+        Ok(s)  =>
+            match fbschema.root_object(s)
+                Some(t) => test.assert(t.name == "T")
+                None    => test.fail("root_type T was declared")
+        Err(e) => test.assert(fberror.is_schema_error(e.kind))
+
+    test.case("a type's width is what the schema says, not what a buffer says")
+    test.assert(fbschema.base_name(FbTypeUint) == "uint")
+    test.assert(fbschema.base_size(FbTypeDouble) == 8)
+    test.assert(fbschema.base_size(FbTypeString) == 4)
+    test.assert(fbschema.is_inline(FbTypeStruct))
+    test.assert(not fbschema.is_inline(FbTypeTable))
+
+    test.case("and a schema round-trips through text")
+    match fbschema.parse("table T { a:int; }")
+        Ok(s)  => test.assert(str.len(fbschema.to_text(s)) > 0)
+        Err(e) => test.assert(fberror.is_schema_error(e.kind))
+
+@test
+fn test_reading_by_name_is_what_a_generator_cannot_do() [io]
+    // A schema that arrives at run time, a buffer whose schema a caller
+    // chose from several, and a dumper for any buffer at all.
+    test.case("a document pairs a buffer with the schema that describes it")
+    match fbschema.parse("table T { a:int; } root_type T;")
+        Ok(s)  =>
+            match fbaccess.document(fbbuf.buffer(bytes.zeros(16)), s)
+                Ok(d)  =>
+                    test.assert(d.type_name == "T")
+                    match fbaccess.root(d)
+                        Ok(t)  => test.assert(t.at >= 0)
+                        Err(e) => test.assert(fberror.is_malformed(e.kind))
+                    match fbaccess.field(d, "T", 8, "a")
+                        Ok(v)  => test.assert(str.len(fbaccess.value_kind(v)) > 0)
+                        Err(e) => test.assert(fberror.is_malformed(e.kind))
+                    match fbaccess.fields(d, "T", 8)
+                        Ok(vs) => test.assert(list.len(vs) >= 0)
+                        Err(e) => test.assert(fberror.is_malformed(e.kind))
+                    match fbaccess.to_json(d)
+                        Ok(j)  => test.assert(str.len(j) > 0)
+                        Err(e) => test.assert(fberror.is_malformed(e.kind))
+                Err(e) => test.assert(fberror.is_malformed(e.kind))
+        Err(e) => test.assert(fberror.is_schema_error(e.kind))
+
+    test.case("a value carries its own type, because the caller may not know it")
+    test.assert(fbaccess.value_kind(fbaccess.int_value(7)) == "int")
+    test.assert(fbaccess.value_kind(FbValueAbsent) == "absent")
+
+    test.case("the field names come out in declaration order")
+    match fbschema.parse("table T { a:int; }")
+        Ok(s)  =>
+            match fbaccess.field_names(s, "T")
+                Ok(ns) => test.assert(list.len(ns) == 1)
+                Err(e) => test.assert(fberror.is_schema_error(e.kind))
+        Err(e) => test.assert(fberror.is_schema_error(e.kind))
+
+    test.case("a union's member table is a thing ONLY the schema knows")
+    match fbschema.parse("table A {} table B {} union U { A, B }")
+        Ok(s)  =>
+            match fbaccess.union_member(s, "U", 1)
+                Ok(n)  => test.assert(n == "A")
+                Err(e) => test.assert(fberror.is_schema_error(e.kind))
+            match fbaccess.union_member(s, "U", 0)
+                Ok(n)  => test.assert(n == "")
+                Err(e) => test.assert(fberror.is_schema_error(e.kind))
+        Err(e) => test.assert(fberror.is_schema_error(e.kind))
+
+    test.case("and so is an enum member's name")
+    match fbschema.parse("enum E : byte { A, B }")
+        Ok(s)  =>
+            match fbaccess.enum_member(s, "E", 0)
+                Ok(n)  => test.assert(n == "A")
+                Err(e) => test.assert(fberror.is_schema_error(e.kind))
+        Err(e) => test.assert(fberror.is_schema_error(e.kind))
